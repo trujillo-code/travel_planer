@@ -60,7 +60,7 @@ export default function AuthPage() {
           <h1 style={{
             fontFamily:"'Cormorant Garamond',serif",fontSize:"2rem",fontWeight:600,
             margin:".5rem 0 .25rem",color:"#1C1C1E"
-          }}>Wanderplan</h1>
+          }}>Suavid Travel Planner</h1>
           <p style={{color:"#8A8580",fontSize:".85rem",margin:0}}>
             {mode === "login" ? "Inicia sesión para ver tus viajes" : "Crea tu cuenta para planificar viajes"}
           </p>

@@ -251,7 +251,7 @@ export default function TravelPlanner({ user, onSignOut }) {
       <nav style={{position:"sticky",top:0,zIndex:200,background:"#F7F4EF",borderBottom:"1px solid var(--line)",height:"52px",display:"flex",alignItems:"center",padding:"0 1.5rem",gap:".75rem"}}>
         <button onClick={()=>setView("home")} style={{background:"none",border:"none",cursor:"pointer",display:"flex",alignItems:"center",gap:".5rem"}}>
           <span style={{fontSize:"1.2rem"}}>🧭</span>
-          <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.1rem",fontWeight:600,color:"var(--ink)"}}>Wanderplan</span>
+          <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.1rem",fontWeight:600,color:"var(--ink)"}}>Suavid Travel Planner</span>
         </button>
         {view==="trip"&&trip&&<>
           <span style={{color:"var(--line)",fontSize:"1.1rem"}}>›</span>
@@ -461,7 +461,7 @@ export default function TravelPlanner({ user, onSignOut }) {
                           {to&&<><span style={{color:"var(--muted)",fontSize:".8rem"}}>→</span><span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".8rem",padding:".2rem .6rem",background:to.color+"18",borderRadius:"6px",color:to.color,fontWeight:500}}>{to.emoji} {to.name}</span></>}
                         </div>
                         <div style={{display:"flex",gap:".75rem",flexWrap:"wrap"}}>
-                          {tr.date&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--muted)"}}>📅 {fmtDate(tr.date)}{rental&&tr.returnDate?` → ${fmtDate(tr.returnDate)}`:""}</span>}
+                          {tr.date&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--muted)"}}>📅 {fmtDate(tr.date)}{tr.returnDate&&tr.returnDate!==tr.date?` → ${fmtDate(tr.returnDate)}`:""}</span>}
                           {tr.departTime&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--muted)"}}>🕐 {tr.departTime}{tr.arriveTime?` → ${tr.arriveTime}`:""}</span>}
                           {tr.provider&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--muted)"}}>🏢 {tr.provider}</span>}
                           {tr.confirmation&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--muted)"}}>📋 {tr.confirmation}</span>}
@@ -759,8 +759,6 @@ export default function TravelPlanner({ user, onSignOut }) {
                 <button key={tt.key} onClick={()=>setForm(p=>({...p,transitType:tt.key}))} style={{background:form.transitType===tt.key?tt.color:"rgba(28,28,30,.05)",border:"none",color:form.transitType===tt.key?"#fff":"var(--muted)",padding:".4rem .75rem",borderRadius:"6px",cursor:"pointer",fontSize:".77rem",transition:"all .15s"}}>{tt.icon} {tt.label}</button>
               ))}
             </div>
-            <Lbl>Nombre / Descripción</Lbl>
-            <Inp placeholder={form.transitType==="flight"?"Ej. Vuelo LAX-CDG":form.transitType==="car"?"Ej. Alquiler Hertz":form.transitType==="train"?"Ej. Tren AVE Madrid-Barcelona":"Ej. Traslado al hotel"} value={form.title||""} onChange={e=>setForm(p=>({...p,title:e.target.value}))}/>
             <Lbl>Origen → Destino</Lbl>
             <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:".5rem",alignItems:"center",marginBottom:"1rem"}}>
               <select value={form.fromDestId||""} onChange={e=>setForm(p=>({...p,fromDestId:e.target.value}))} style={{border:"1px solid rgba(28,28,30,.12)",borderRadius:"6px",padding:".55rem .7rem",fontSize:".85rem",color:"#1C1C1E",background:"#F7F4EF",cursor:"pointer"}}>
@@ -788,13 +786,14 @@ export default function TravelPlanner({ user, onSignOut }) {
                 <div><Lbl>Fecha recogida</Lbl><Inp type="date" value={form.date||""} onChange={e=>setForm(p=>({...p,date:e.target.value}))}/></div>
                 <div><Lbl>Fecha devolución</Lbl><Inp type="date" min={form.date||""} value={form.returnDate||""} onChange={e=>setForm(p=>({...p,returnDate:e.target.value}))}/></div>
               </div>
-              :<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:".75rem"}}>
-                <div><Lbl>Fecha</Lbl><Inp type="date" value={form.date||""} onChange={e=>setForm(p=>({...p,date:e.target.value}))}/></div>
+              :<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".75rem"}}>
+                <div><Lbl>Fecha salida</Lbl><Inp type="date" value={form.date||""} onChange={e=>setForm(p=>({...p,date:e.target.value}))}/></div>
+                <div><Lbl>Fecha llegada</Lbl><Inp type="date" min={form.date||""} value={form.returnDate||""} onChange={e=>setForm(p=>({...p,returnDate:e.target.value}))}/></div>
                 <div><Lbl>Hora salida</Lbl><Inp type="time" value={form.departTime||""} onChange={e=>setForm(p=>({...p,departTime:e.target.value}))}/></div>
                 <div><Lbl>Hora llegada</Lbl><Inp type="time" value={form.arriveTime||""} onChange={e=>setForm(p=>({...p,arriveTime:e.target.value}))}/></div>
               </div>
             }
-            {form.date&&isRental(form.transitType)&&form.returnDate&&<p className="hint">📅 {fmtDate(form.date)} → {fmtDate(form.returnDate)} · {diffDays(form.date,form.returnDate)+1} días de alquiler</p>}
+            {form.date&&form.returnDate&&<p className="hint">📅 {fmtDate(form.date)} → {fmtDate(form.returnDate)}{isRental(form.transitType)?` · ${diffDays(form.date,form.returnDate)+1} días de alquiler`:form.date!==form.returnDate?` · ${diffDays(form.date,form.returnDate)+1} días`:""}            </p>}
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".75rem"}}>
               <div><Lbl>Proveedor / Aerolínea</Lbl><Inp placeholder="Ej. Avianca" value={form.provider||""} onChange={e=>setForm(p=>({...p,provider:e.target.value}))}/></div>
               <div><Lbl>N° Confirmación / Reserva</Lbl><Inp placeholder="Ej. ABC123" value={form.confirmation||""} onChange={e=>setForm(p=>({...p,confirmation:e.target.value}))}/></div>
