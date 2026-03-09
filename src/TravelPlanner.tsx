@@ -1,5 +1,7 @@
 // @ts-nocheck
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
+import { doc, getDoc, setDoc } from "firebase/firestore";
+import { db } from "./firebase";
 
 // ─── Date helpers ────────────────────────────────────────────────────────────
 const addDays  = (s, n) => { if (!s) return ""; const d = new Date(s+"T00:00:00"); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
@@ -28,7 +30,7 @@ const uid   = () => Math.random().toString(36).slice(2,9);
 const EMOJIS = ["🌍","🌎","🌏","✈️","🗺️","🏖️","🏔️","🎒","🏝️","🚀","🗼","🏰","🗡","🎭","🎪","🎠","🐚","🌅","🌵","🏠","🛕","🧳","🎑","🎸","🌸","🍜","☀️","❄️","🌊","⭐","🎿","🏴","🟠","🟡","🟢","🔵","🟣"];
 
 // ─── App ─────────────────────────────────────────────────────────────────────
-export default function TravelPlanner() {
+export default function TravelPlanner({ user, onSignOut }) {
   const [trips,          setTrips]          = useState([]);
   const [activeTrip,     setActiveTrip]     = useState(null);
   const [view,           setView]           = useState("home");
@@ -39,6 +41,42 @@ export default function TravelPlanner() {
   const [activeDestId,   setActiveDestId]   = useState(null);
   const [dayFilter,      setDayFilter]      = useState(null);
   const [form,           setForm]           = useState({});
+  const [dataLoaded,     setDataLoaded]     = useState(false);
+  const [saving,         setSaving]         = useState(false);
+  const saveTimer = useRef(null);
+
+  // ── Load trips from Firestore on mount ─────────────────────────────────────
+  useEffect(() => {
+    if (!user?.uid) return;
+    const load = async () => {
+      try {
+        const snap = await getDoc(doc(db, "userData", user.uid));
+        if (snap.exists()) {
+          setTrips(snap.data().trips || []);
+        }
+      } catch (err) {
+        console.error("Error loading data:", err);
+      }
+      setDataLoaded(true);
+    };
+    load();
+  }, [user?.uid]);
+
+  // ── Save trips to Firestore when they change (debounced) ───────────────────
+  useEffect(() => {
+    if (!dataLoaded || !user?.uid) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      setSaving(true);
+      try {
+        await setDoc(doc(db, "userData", user.uid), { trips, updatedAt: Date.now() });
+      } catch (err) {
+        console.error("Error saving data:", err);
+      }
+      setSaving(false);
+    }, 800);
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
+  }, [trips, dataLoaded, user?.uid]);
 
   const trip       = trips.find(t => t.id === activeTrip);
   const activeDest = trip?.destinations.find(d => d.id === activeDestId);
@@ -230,9 +268,15 @@ export default function TravelPlanner() {
             ))}
           </div>
         )}
+        {saving&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".65rem",color:"var(--muted)",padding:".2rem .5rem",background:"rgba(28,28,30,.05)",borderRadius:"10px"}}>💾 Guardando...</span>}
         {view==="home"&&<button onClick={()=>{setForm({emoji:"🌍"});setModal("newTrip");}} style={{background:"var(--accent)",border:"none",color:"#fff",padding:".45rem 1.1rem",borderRadius:"6px",fontSize:".8rem",fontWeight:500,cursor:"pointer"}}>+ Nuevo viaje</button>}
         {view==="trip"&&tripView==="dest"&&<button onClick={openNewDest} style={{background:"var(--accent)",border:"none",color:"#fff",padding:".45rem 1.1rem",borderRadius:"6px",fontSize:".8rem",fontWeight:500,cursor:"pointer"}}>+ Destino</button>}
         {view==="trip"&&tripView==="transits"&&<button onClick={openNewTransit} style={{background:"var(--accent)",border:"none",color:"#fff",padding:".45rem 1.1rem",borderRadius:"6px",fontSize:".8rem",fontWeight:500,cursor:"pointer"}}>+ Trayecto</button>}
+        {/* User menu */}
+        <div style={{display:"flex",alignItems:"center",gap:".5rem",marginLeft:".5rem"}}>
+          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--muted)",maxWidth:"100px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{user?.displayName || user?.email}</span>
+          <button onClick={onSignOut} title="Cerrar sesión" style={{background:"rgba(28,28,30,.06)",border:"none",color:"var(--muted)",padding:".3rem .6rem",borderRadius:"5px",cursor:"pointer",fontSize:".72rem",fontFamily:"'DM Sans',sans-serif"}}>Salir</button>
+        </div>
       </nav>
 
       {/* ── HOME ────────────────────────────────────────────────────────────── */}
