@@ -33,19 +33,32 @@ const CURRENCIES = [
   { code:"EUR", symbol:"€",   name:"Euro",            flag:"🇪🇺" },
   { code:"COP", symbol:"COP$",name:"Peso colombiano", flag:"🇨🇴" },
 ];
-// All costs are stored in COP. fmtCOP formats as pesos, fmtAlt converts & formats in trip currency
-const fmtCOP = (amount) => `COP$${Math.round(amount).toLocaleString()}`;
+// Costs stored in their original currency (costCurrency field: "COP" or trip currency)
+// toCOP converts any amount to COP using the trip's rate
+const toCOP = (amount, costCurrency, tripCurrency, rate) => {
+  if (!costCurrency || costCurrency==="COP") return amount;
+  if (costCurrency===tripCurrency && rate>0) return amount * rate;
+  return amount;
+};
+const toAlt = (amount, costCurrency, tripCurrency, rate) => {
+  if (!tripCurrency || tripCurrency==="COP" || !rate || rate<=0) return null;
+  if (costCurrency===tripCurrency) return amount;
+  return amount / rate; // COP to alt
+};
+const fmtCOP = (a) => `COP$${Math.round(a).toLocaleString()}`;
+const fmtAltVal = (a, currency) => {
+  const c = CURRENCIES.find(cc=>cc.code===currency);
+  return `${c?.symbol||currency}${a.toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:2})}`;
+};
+// Show dual: COP + alt currency
+const fmtDual = (copAmount, altAmount, tripCurrency) => {
+  const cop = fmtCOP(copAmount);
+  if (!tripCurrency || tripCurrency==="COP" || altAmount===null || altAmount===undefined) return cop;
+  return `${cop} (${fmtAltVal(altAmount, tripCurrency)})`;
+};
 const fmtAlt = (amount, currency, rate) => {
   if (!currency || currency==="COP" || !rate || rate<=0) return null;
-  const c = CURRENCIES.find(cc=>cc.code===currency);
-  const converted = amount / rate;
-  return `${c?.symbol||currency}${converted.toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:2})}`;
-};
-// Dual display: COP + optional alt currency
-const fmtDual = (amount, currency, rate) => {
-  const cop = fmtCOP(amount);
-  const alt = fmtAlt(amount, currency, rate);
-  return alt ? `${cop} (${alt})` : cop;
+  return fmtAltVal(amount / rate, currency);
 };
 
 // ─── App ─────────────────────────────────────────────────────────────────────
@@ -101,12 +114,24 @@ export default function TravelPlanner({ user, onSignOut }) {
   const activeDest = trip?.destinations.find(d => d.id === activeDestId);
 
   // ── Computed ───────────────────────────────────────────────────────────────
-  const itemsCost    = trip?.destinations.reduce((s,d)=>s+d.items.reduce((ss,i)=>ss+(i.cost||0),0),0)||0;
-  const transitsCost = trip?.transits?.reduce((s,t)=>s+(t.cost||0),0)||0;
-  const totalCost    = itemsCost + transitsCost;
   const cur = trip?.currency || "COP";
-  const rate = trip?.copRate || 0; // how many COP = 1 unit of trip currency
-  const fmt = (amount) => fmtDual(amount, cur, rate);
+  const rate = trip?.copRate || 0;
+  const _toCOP = (cost, costCur) => toCOP(cost||0, costCur||"COP", cur, rate);
+  const itemsCost    = trip?.destinations.reduce((s,d)=>s+d.items.reduce((ss,i)=>ss+_toCOP(i.cost,i.costCurrency),0),0)||0;
+  const transitsCost = trip?.transits?.reduce((s,t)=>s+_toCOP(t.cost,t.costCurrency),0)||0;
+  const totalCost    = itemsCost + transitsCost;
+  // fmt: takes COP amount, shows dual
+  const fmt = (copAmount) => {
+    const altAmt = (cur!=="COP" && rate>0) ? copAmount/rate : null;
+    return fmtDual(copAmount, altAmt, cur);
+  };
+  // fmtI: format an individual item/transit cost (stored in its original currency)
+  const fmtI = (cost, costCur) => {
+    const copAmt = _toCOP(cost, costCur);
+    return fmt(copAmt);
+  };
+  // sumCOP: sum items converting each to COP
+  const sumCOP = (items) => items.reduce((s,i)=>s+_toCOP(i.cost,i.costCurrency),0);
   const tripDays     = trip
     ? (trip.startDate&&trip.endDate ? diffDays(trip.startDate,trip.endDate)+1 : trip.destinations.reduce((s,d)=>s+d.days,0))
     : 0;
@@ -164,6 +189,7 @@ export default function TravelPlanner({ user, onSignOut }) {
     if (!form.type||!activeDestId) return;
     const item = { id:uid(), type:form.type, title:form.title||"", time:form.time||"",
       day:Number(form.day)||1, duration:form.duration||"", cost:Number(form.cost)||0,
+      costCurrency:form.costCurrency||"COP",
       address:form.address||"", notes:form.notes||"", confirmed:false };
     setTrips(p=>p.map(t=>t.id===activeTrip?{...t,destinations:t.destinations.map(d=>d.id===activeDestId?{...d,items:[...d.items,item]}:d)}:t));
     closeModal();
@@ -206,6 +232,7 @@ export default function TravelPlanner({ user, onSignOut }) {
       provider:    form.provider    || "",
       confirmation:form.confirmation|| "",
       cost:        Number(form.cost)||0,
+      costCurrency:form.costCurrency||"COP",
       notes:       form.notes       || "",
       confirmed:   false,
     };
@@ -325,7 +352,8 @@ export default function TravelPlanner({ user, onSignOut }) {
           </div>
           :<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:"1rem"}}>
             {trips.map(t=>{
-              const cost=t.destinations.reduce((s,d)=>s+d.items.reduce((ss,i)=>ss+(i.cost||0),0),0)+(t.transits||[]).reduce((s,tr)=>s+(tr.cost||0),0);
+              const _r=t.copRate||0;const _c=t.currency||"COP";const _tc=(amt,cc)=>toCOP(amt||0,cc||"COP",_c,_r);
+              const cost=t.destinations.reduce((s,d)=>s+d.items.reduce((ss,i)=>ss+_tc(i.cost,i.costCurrency),0),0)+(t.transits||[]).reduce((s,tr)=>s+_tc(tr.cost,tr.costCurrency),0);
               const days=t.startDate&&t.endDate?diffDays(t.startDate,t.endDate)+1:t.destinations.reduce((s,d)=>s+d.days,0);
               return <div key={t.id} className="hov-card" onClick={()=>{setActiveTrip(t.id);setActiveDestId(t.destinations[0]?.id||null);setView("trip");setTripView("dest");}} style={{background:"#fff",border:"1px solid var(--line)",borderRadius:"12px",padding:"1.5rem",cursor:"pointer",transition:"all .25s",boxShadow:"0 2px 12px rgba(28,28,30,.06)"}}>
                 <div style={{display:"flex",justifyContent:"space-between"}}>
@@ -337,7 +365,7 @@ export default function TravelPlanner({ user, onSignOut }) {
                 <div style={{display:"flex",gap:".5rem",flexWrap:"wrap",marginBottom:".75rem"}}>
                   <span style={{fontSize:".72rem",padding:".2rem .6rem",background:"rgba(28,28,30,.05)",borderRadius:"20px",color:"var(--muted)",fontFamily:"'DM Sans',sans-serif"}}>📍 {t.destinations.length} destinos</span>
                   {(t.transits||[]).length>0&&<span style={{fontSize:".72rem",padding:".2rem .6rem",background:"rgba(90,180,232,.1)",borderRadius:"20px",color:"#5AB4E8",fontFamily:"'DM Sans',sans-serif"}}>🚀 {t.transits.length} trayectos</span>}
-                  {cost>0&&<span style={{fontSize:".72rem",padding:".2rem .6rem",background:"rgba(196,98,45,.08)",borderRadius:"20px",color:"var(--accent)",fontFamily:"'DM Sans',sans-serif"}}>💰 {fmtDual(cost,t.currency||"COP",t.copRate||0)}</span>}
+                  {cost>0&&<span style={{fontSize:".72rem",padding:".2rem .6rem",background:"rgba(196,98,45,.08)",borderRadius:"20px",color:"var(--accent)",fontFamily:"'DM Sans',sans-serif"}}>💰 {fmtDual(cost,(_c!=="COP"&&_r>0)?cost/_r:null,_c)}</span>}
                 </div>
                 <div style={{display:"flex",gap:".3rem",flexWrap:"wrap"}}>
                   {t.destinations.slice(0,4).map(d=><span key={d.id} style={{fontSize:".7rem",padding:".15rem .5rem",background:d.color+"20",borderRadius:"4px",color:d.color,fontFamily:"'DM Sans',sans-serif",fontWeight:500}}>{d.emoji} {d.name}</span>)}
@@ -499,7 +527,7 @@ export default function TravelPlanner({ user, onSignOut }) {
                           {tr.departTime&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--muted)"}}>🕐 {tr.departTime}{tr.arriveTime?` → ${tr.arriveTime}`:""}</span>}
                           {tr.provider&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--muted)"}}>🏢 {tr.provider}</span>}
                           {tr.confirmation&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--muted)"}}>📋 {tr.confirmation}</span>}
-                          {tr.cost>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--accent)",fontWeight:500}}>💶 {fmt(tr.cost)}</span>}
+                          {tr.cost>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--accent)",fontWeight:500}}>💶 {fmtI(tr.cost,tr.costCurrency)}</span>}
                         </div>
                         {tr.notes&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--muted)",marginTop:".3rem",fontStyle:"italic"}}>{tr.notes}</div>}
                       </div>
@@ -598,7 +626,7 @@ export default function TravelPlanner({ user, onSignOut }) {
                               <div style={{display:"flex",gap:".6rem",marginTop:".1rem",flexWrap:"wrap"}}>
                                 {item.time&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",color:"var(--muted)"}}>🕐 {item.time}</span>}
                                 {item.duration&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",color:"var(--muted)"}}>⏱ {item.duration}</span>}
-                                {item.cost>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",color:"var(--accent)"}}>💶 {fmt(item.cost)}</span>}
+                                {item.cost>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",color:"var(--accent)"}}>💶 {fmtI(item.cost,item.costCurrency)}</span>}
                               </div>
                             </div>
                             <button onClick={()=>openEditItem(dest.id,item)} className="hov-icon" style={{background:"none",border:"1px solid var(--line)",color:"var(--muted)",padding:".2rem .35rem",borderRadius:"4px",cursor:"pointer",fontSize:".65rem",flexShrink:0}}>✏️</button>
@@ -615,11 +643,11 @@ export default function TravelPlanner({ user, onSignOut }) {
                           <div style={{flex:1,fontFamily:"'DM Sans',sans-serif",fontSize:".78rem",fontWeight:500,color:tt.color}}>{tr.title||tt.label}</div>
                           {to&&<div style={{display:"flex",alignItems:"center",gap:".3rem",fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--muted)"}}>→ <span style={{color:to.color,fontWeight:500}}>{to.emoji} {to.name}</span></div>}
                           {tr.departTime&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",color:"var(--muted)"}}>🕐{tr.departTime}</span>}
-                          {tr.cost>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",color:"var(--accent)"}}>💶{fmt(tr.cost)}</span>}
+                          {tr.cost>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",color:"var(--accent)"}}>💶{fmtI(tr.cost,tr.costCurrency)}</span>}
                         </div>;
                       })}
                     </div>}
-                    {items.some(i=>i.cost>0)&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".7rem",color:"var(--accent)",textAlign:"right",marginTop:".3rem"}}>Día: {fmt(items.reduce((s,i)=>s+(i.cost||0),0))}</div>}
+                    {items.some(i=>i.cost>0)&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".7rem",color:"var(--accent)",textAlign:"right",marginTop:".3rem"}}>Día: {fmt(sumCOP(items))}</div>}
                   </div>
                 </div>;
               })
@@ -627,17 +655,17 @@ export default function TravelPlanner({ user, onSignOut }) {
 
             {totalCost>0&&<div style={{marginTop:"1.5rem",padding:"1.25rem 1.5rem",background:"#fff",border:"1px solid var(--line)",borderRadius:"10px"}}>
               <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".08em",marginBottom:"1rem"}}>Desglose de gastos</div>
-              {trip.destinations.map(d=>{const c=d.items.reduce((s,i)=>s+(i.cost||0),0);if(!c)return null;const p=totalCost>0?(c/totalCost)*100:0;return <div key={d.id} style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".55rem"}}>
+              {trip.destinations.map(d=>{const c=sumCOP(d.items);if(!c)return null;const p=totalCost>0?(c/totalCost)*100:0;return <div key={d.id} style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".55rem"}}>
                 <span style={{fontSize:".85rem"}}>{d.emoji}</span>
                 <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".78rem",flex:"0 0 95px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{d.name}</span>
                 <div style={{flex:1,height:"5px",background:"rgba(28,28,30,.06)",borderRadius:"3px",overflow:"hidden"}}><div style={{height:"100%",width:`${p}%`,background:d.color,borderRadius:"3px"}}/></div>
                 <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:d.color,flex:"0 0 65px",textAlign:"right"}}>{fmt(c)}</span>
               </div>;})}
-              {(trip.transits||[]).filter(tr=>tr.cost>0).map(tr=>{const tt=ttInfo(tr.transitType);const p=totalCost>0?(tr.cost/totalCost)*100:0;return <div key={tr.id} style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".55rem"}}>
+              {(trip.transits||[]).filter(tr=>tr.cost>0).map(tr=>{const tt=ttInfo(tr.transitType);const trCOP=_toCOP(tr.cost,tr.costCurrency);const p=totalCost>0?(trCOP/totalCost)*100:0;return <div key={tr.id} style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".55rem"}}>
                 <span style={{fontSize:".85rem"}}>{tt.icon}</span>
                 <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".78rem",flex:"0 0 95px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:tt.color}}>{tr.title||tt.label}</span>
                 <div style={{flex:1,height:"5px",background:"rgba(28,28,30,.06)",borderRadius:"3px",overflow:"hidden"}}><div style={{height:"100%",width:`${p}%`,background:tt.color,borderRadius:"3px"}}/></div>
-                <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:tt.color,flex:"0 0 65px",textAlign:"right"}}>{fmt(tr.cost)}</span>
+                <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:tt.color,flex:"0 0 65px",textAlign:"right"}}>{fmtI(tr.cost,tr.costCurrency)}</span>
               </div>;})}
               <div style={{borderTop:"1px solid var(--line)",paddingTop:".75rem",display:"flex",justifyContent:"space-between",fontFamily:"'DM Sans',sans-serif",fontSize:".82rem"}}>
                 <span style={{color:"var(--muted)"}}>Total estimado</span><span style={{color:"var(--accent)",fontWeight:600}}>{fmt(totalCost)}</span>
@@ -668,7 +696,7 @@ export default function TravelPlanner({ user, onSignOut }) {
                   <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".76rem",color:"var(--muted)",paddingLeft:"2.75rem"}}>
                     {activeDest.startDate?<><span style={{color:"var(--accent)",fontWeight:500}}>{fmtDate(activeDest.startDate)}</span> → <span style={{color:"var(--accent)",fontWeight:500}}>{fmtDate(activeDest.endDate)}</span> · {activeDest.days} días</>:`${activeDest.days} días`}
                     {" · "}{activeDest.items.length} elementos
-                    {activeDest.items.some(i=>i.cost>0)&&" · "+fmt(activeDest.items.reduce((s,i)=>s+(i.cost||0),0))}
+                    {activeDest.items.some(i=>i.cost>0)&&" · "+fmt(sumCOP(activeDest.items))}
                   </div>
                 </div>
                 <button onClick={()=>{setForm({type:"activity",day:dayFilter||1});setModal("newItem");}} style={{background:"var(--accent)",border:"none",color:"#fff",padding:".55rem 1.2rem",borderRadius:"8px",fontSize:".82rem",fontWeight:500,cursor:"pointer",whiteSpace:"nowrap"}}>+ Agregar</button>
@@ -724,7 +752,7 @@ export default function TravelPlanner({ user, onSignOut }) {
                                 {item.time&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".71rem",color:"var(--muted)"}}>🕐 {item.time}</span>}
                                 {item.duration&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".71rem",color:"var(--muted)"}}>⏱ {item.duration}</span>}
                                 {item.address&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".71rem",color:"var(--muted)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"180px"}}>📍 {item.address}</span>}
-                                {item.cost>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".71rem",color:"var(--accent)"}}>💶 {fmt(item.cost)}</span>}
+                                {item.cost>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".71rem",color:"var(--accent)"}}>💶 {fmtI(item.cost,item.costCurrency)}</span>}
                               </div>
                               {item.notes&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".71rem",color:"var(--muted)",marginTop:".2rem",fontStyle:"italic"}}>{item.notes}</div>}
                             </div>
@@ -746,7 +774,7 @@ export default function TravelPlanner({ user, onSignOut }) {
               <div style={{marginTop:"2rem",padding:"1rem 1.5rem",background:"#fff",border:"1px solid var(--line)",borderRadius:"10px",display:"flex",gap:"2rem",flexWrap:"wrap"}}>
                 {Object.entries(ITEM_TYPES).map(([k,T])=>{const c=activeDest.items.filter(i=>i.type===k).length;if(!c)return null;return <div key={k} style={{fontFamily:"'DM Sans',sans-serif",fontSize:".78rem"}}><span style={{color:T.color}}>{T.icon} {T.label}</span><span style={{color:"var(--muted)",marginLeft:".3rem"}}>{c}</span></div>;})}
                 <div style={{flex:1}}/>
-                {activeDest.items.some(i=>i.cost>0)&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".78rem",color:"var(--accent)",fontWeight:500}}>Total: {fmt(activeDest.items.reduce((s,i)=>s+(i.cost||0),0))}</div>}
+                {activeDest.items.some(i=>i.cost>0)&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".78rem",color:"var(--accent)",fontWeight:500}}>Total: {fmt(sumCOP(activeDest.items))}</div>}
               </div>
             </div>
           )}
@@ -844,7 +872,15 @@ export default function TravelPlanner({ user, onSignOut }) {
               <div><Lbl>Proveedor / Aerolínea</Lbl><Inp placeholder="Ej. Avianca" value={form.provider||""} onChange={e=>setForm(p=>({...p,provider:e.target.value}))}/></div>
               <div><Lbl>N° Confirmación / Reserva</Lbl><Inp placeholder="Ej. ABC123" value={form.confirmation||""} onChange={e=>setForm(p=>({...p,confirmation:e.target.value}))}/></div>
             </div>
-            <Lbl>Costo (COP$)</Lbl><Inp type="number" min="0" placeholder="0" value={form.cost||""} onChange={e=>setForm(p=>({...p,cost:+e.target.value}))}/>
+            <Lbl>Costo</Lbl>
+            <div style={{display:"flex",gap:".5rem",alignItems:"center",marginBottom:"1rem"}}>
+              <Inp type="number" min="0" placeholder="0" value={form.cost||""} onChange={e=>setForm(p=>({...p,cost:+e.target.value}))} style={{flex:1,marginBottom:0}}/>
+              <div style={{display:"flex",gap:".25rem",flexShrink:0}}>
+                <button onClick={()=>setForm(p=>({...p,costCurrency:"COP"}))} style={{background:(form.costCurrency||"COP")==="COP"?"var(--accent)":"rgba(28,28,30,.06)",border:"none",color:(form.costCurrency||"COP")==="COP"?"#fff":"var(--muted)",padding:".4rem .6rem",borderRadius:"5px",cursor:"pointer",fontSize:".72rem"}}>COP$</button>
+                {cur!=="COP"&&<button onClick={()=>setForm(p=>({...p,costCurrency:cur}))} style={{background:(form.costCurrency||"COP")===cur?"var(--accent)":"rgba(28,28,30,.06)",border:"none",color:(form.costCurrency||"COP")===cur?"#fff":"var(--muted)",padding:".4rem .6rem",borderRadius:"5px",cursor:"pointer",fontSize:".72rem"}}>{(CURRENCIES.find(c=>c.code===cur)||{}).symbol}</button>}
+              </div>
+            </div>
+            {form.cost>0&&rate>0&&cur!=="COP"&&<p className="hint">{(form.costCurrency||"COP")==="COP"?`= ${fmtAltVal(form.cost/rate,cur)}`:`= ${fmtCOP(form.cost*rate)}`}</p>}
             <Lbl>Notas</Lbl>
             <textarea placeholder="Detalles, equipaje, instrucciones..." value={form.notes||""} onChange={e=>setForm(p=>({...p,notes:e.target.value}))} style={{width:"100%",border:"1px solid var(--line)",borderRadius:"6px",padding:".6rem .8rem",fontSize:".85rem",color:"var(--ink)",resize:"vertical",minHeight:"60px",background:"#F7F4EF",marginBottom:"1rem"}}/>
             <Btns onCancel={closeModal} onOk={modal==="editTransit"?saveTransit:addTransit} label={modal==="editTransit"?"Guardar cambios":"Agregar trayecto"}/>
@@ -870,7 +906,15 @@ export default function TravelPlanner({ user, onSignOut }) {
               <div><Lbl>Duración</Lbl><Inp placeholder="2h" value={form.duration||""} onChange={e=>setForm(p=>({...p,duration:e.target.value}))}/></div>
             </div>
             <Lbl>Dirección / Lugar</Lbl><Inp placeholder="Ej. Av. Principal 123" value={form.address||""} onChange={e=>setForm(p=>({...p,address:e.target.value}))}/>
-            <Lbl>Costo (COP$)</Lbl><Inp type="number" min="0" placeholder="0" value={form.cost||""} onChange={e=>setForm(p=>({...p,cost:+e.target.value}))}/>
+            <Lbl>Costo</Lbl>
+            <div style={{display:"flex",gap:".5rem",alignItems:"center",marginBottom:"1rem"}}>
+              <Inp type="number" min="0" placeholder="0" value={form.cost||""} onChange={e=>setForm(p=>({...p,cost:+e.target.value}))} style={{flex:1,marginBottom:0}}/>
+              <div style={{display:"flex",gap:".25rem",flexShrink:0}}>
+                <button onClick={()=>setForm(p=>({...p,costCurrency:"COP"}))} style={{background:(form.costCurrency||"COP")==="COP"?"var(--accent)":"rgba(28,28,30,.06)",border:"none",color:(form.costCurrency||"COP")==="COP"?"#fff":"var(--muted)",padding:".4rem .6rem",borderRadius:"5px",cursor:"pointer",fontSize:".72rem"}}>COP$</button>
+                {cur!=="COP"&&<button onClick={()=>setForm(p=>({...p,costCurrency:cur}))} style={{background:(form.costCurrency||"COP")===cur?"var(--accent)":"rgba(28,28,30,.06)",border:"none",color:(form.costCurrency||"COP")===cur?"#fff":"var(--muted)",padding:".4rem .6rem",borderRadius:"5px",cursor:"pointer",fontSize:".72rem"}}>{(CURRENCIES.find(c=>c.code===cur)||{}).symbol}</button>}
+              </div>
+            </div>
+            {form.cost>0&&rate>0&&cur!=="COP"&&<p className="hint">{(form.costCurrency||"COP")==="COP"?`= ${fmtAltVal(form.cost/rate,cur)}`:`= ${fmtCOP(form.cost*rate)}`}</p>}
             <Lbl>Notas</Lbl>
             <textarea placeholder="Reserva, detalles..." value={form.notes||""} onChange={e=>setForm(p=>({...p,notes:e.target.value}))} style={{width:"100%",border:"1px solid var(--line)",borderRadius:"6px",padding:".6rem .8rem",fontSize:".85rem",color:"var(--ink)",resize:"vertical",minHeight:"60px",background:"#F7F4EF",marginBottom:"1rem"}}/>
             <Btns onCancel={closeModal} onOk={modal==="editItem"?saveItem:addItem} label={modal==="editItem"?"Guardar cambios":"Agregar"}/>
