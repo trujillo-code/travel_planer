@@ -253,20 +253,31 @@ export default function TravelPlanner({ user, onSignOut }) {
         .sort((a,b)=>a.day-b.day||(a.time||"").localeCompare(b.time||""))
     : [];
 
-  // ── Build full itinerary for summary ───────────────────────────────────────
+  // ── Build full itinerary for summary (date-based, supports overlapping dests) ──
   const buildItinerary = () => {
     if (!trip) return [];
-    let abs=1, rows=[];
+    // Collect all date→dest entries
+    const dateMap = {};
     trip.destinations.forEach(dest=>{
       for(let d=1;d<=dest.days;d++){
-        rows.push({ abs, dest, localDay:d,
+        const realDate = dest.startDate ? addDays(dest.startDate, d-1) : `_nodate_${dest.id}_${d}`;
+        if(!dateMap[realDate]) dateMap[realDate] = [];
+        dateMap[realDate].push({ dest, localDay:d,
           items:dest.items.filter(i=>i.day===d).sort((a,b)=>(a.time||"99").localeCompare(b.time||"99")),
           transits:(trip.transits||[]).filter(tr=>tr.fromDestId===dest.id && (
             !tr.date || tr.date===addDays(dest.startDate,d-1) || (!tr.date && d===dest.days)
           ))
         });
-        abs++;
       }
+    });
+    // Sort dates and flatten to rows
+    const sortedDates = Object.keys(dateMap).sort();
+    let abs=1, rows=[];
+    sortedDates.forEach(date=>{
+      dateMap[date].forEach(entry=>{
+        rows.push({ abs, date, ...entry });
+        abs++;
+      });
     });
     return rows;
   };
@@ -599,14 +610,18 @@ export default function TravelPlanner({ user, onSignOut }) {
             {trip.startDate&&trip.destinations.length>0&&(()=>{
               const itinerary=buildItinerary();
               if(itinerary.length===0) return null;
-              const startD=new Date(trip.startDate+"T00:00:00");
-              const firstDow=startD.getDay(); // 0=Sun
-              const monthLabels=[];
-              let lastMonth="";
+              // Group by date for calendar cells
+              const byDate={};
               itinerary.forEach(row=>{
-                const rd=dayToDate(row.dest,row.localDay);
-                if(rd){const m=new Date(rd+"T00:00:00").toLocaleDateString("es-ES",{month:"long",year:"numeric"});if(m!==lastMonth){monthLabels.push({abs:row.abs,label:m});lastMonth=m;}}
+                const rd=row.date&&!row.date.startsWith("_")?row.date:null;
+                if(!rd) return;
+                if(!byDate[rd]) byDate[rd]=[];
+                byDate[rd].push(row);
               });
+              const dates=Object.keys(byDate).sort();
+              if(dates.length===0) return null;
+              const startD=new Date(dates[0]+"T00:00:00");
+              const firstDow=startD.getDay();
               return <div style={{marginBottom:"2rem",background:"#fff",border:"1px solid var(--line)",borderRadius:"10px",padding:"1.25rem"}}>
                 <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".08em",marginBottom:".75rem"}}>Calendario</div>
                 <div style={{display:"flex",gap:".3rem",marginBottom:".5rem"}}>
@@ -614,20 +629,27 @@ export default function TravelPlanner({ user, onSignOut }) {
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:".3rem"}}>
                   {Array.from({length:firstDow}).map((_,i)=><div key={"e"+i}/>)}
-                  {itinerary.map(row=>{
-                    const rd=dayToDate(row.dest,row.localDay);
-                    const dayNum=rd?new Date(rd+"T00:00:00").getDate():"";
-                    const hasItems=row.items.length>0;
-                    const itemCount=row.items.length;
-                    const dayCost=sumCOP(row.items);
-                    return <div key={row.abs} title={`${row.dest.name} · Día ${row.localDay}${hasItems?` · ${itemCount} actividades`:""}`}
-                      style={{background:row.dest.color+"18",border:`1.5px solid ${row.dest.color}40`,borderRadius:"6px",padding:".25rem .15rem",textAlign:"center",minHeight:"48px",cursor:"pointer",transition:"all .15s",position:"relative"}}
-                      onClick={()=>{setActiveDestId(row.dest.id);setDayFilter(row.localDay);setTripView("dest");}}>
-                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",fontWeight:600,color:row.dest.color}}>{dayNum}</div>
-                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".5rem",color:row.dest.color+"cc",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{row.dest.emoji}{row.dest.name.slice(0,4)}</div>
-                      {hasItems&&<div style={{display:"flex",justifyContent:"center",gap:"1px",marginTop:"2px",flexWrap:"wrap"}}>
-                        {row.items.slice(0,3).map(it=><span key={it.id} style={{fontSize:".5rem"}}>{(ITEM_TYPES[it.type]||ITEM_TYPES.activity).icon}</span>)}
-                        {row.items.length>3&&<span style={{fontSize:".45rem",color:row.dest.color}}>+{row.items.length-3}</span>}
+                  {dates.map(date=>{
+                    const entries=byDate[date];
+                    const dayNum=new Date(date+"T00:00:00").getDate();
+                    const allItems=entries.flatMap(e=>e.items);
+                    const multi=entries.length>1;
+                    const first=entries[0];
+                    // Gradient background for multiple dests
+                    const bg=multi
+                      ?`linear-gradient(135deg, ${entries.map((e,i)=>`${e.dest.color}18 ${(i/(entries.length))*100}%, ${e.dest.color}18 ${((i+1)/entries.length)*100}%`).join(", ")})`
+                      :first.dest.color+"18";
+                    const borderColor=multi?"var(--accent)":first.dest.color+"40";
+                    return <div key={date} title={entries.map(e=>`${e.dest.name} · Día ${e.localDay}`).join(" + ")}
+                      style={{background:bg,border:`1.5px solid ${borderColor}`,borderRadius:"6px",padding:".25rem .15rem",textAlign:"center",minHeight:"48px",cursor:"pointer",transition:"all .15s"}}
+                      onClick={()=>{setActiveDestId(first.dest.id);setDayFilter(first.localDay);setTripView("dest");}}>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",fontWeight:600,color:multi?"var(--ink)":first.dest.color}}>{dayNum}</div>
+                      <div style={{display:"flex",justifyContent:"center",gap:"1px",flexWrap:"wrap"}}>
+                        {entries.map(e=><span key={e.dest.id} style={{fontSize:".5rem",color:e.dest.color+"cc"}} title={e.dest.name}>{e.dest.emoji}</span>)}
+                      </div>
+                      {allItems.length>0&&<div style={{display:"flex",justifyContent:"center",gap:"1px",marginTop:"1px",flexWrap:"wrap"}}>
+                        {allItems.slice(0,3).map(it=><span key={it.id} style={{fontSize:".45rem"}}>{(ITEM_TYPES[it.type]||ITEM_TYPES.activity).icon}</span>)}
+                        {allItems.length>3&&<span style={{fontSize:".4rem",color:"var(--muted)"}}>+{allItems.length-3}</span>}
                       </div>}
                     </div>;
                   })}
@@ -637,8 +659,8 @@ export default function TravelPlanner({ user, onSignOut }) {
 
             {trip.destinations.length===0
               ?<div style={{textAlign:"center",padding:"3rem",color:"var(--muted)",fontFamily:"'DM Sans',sans-serif"}}><div style={{fontSize:"2.5rem",marginBottom:".75rem"}}>🏝️</div><p>Añade destinos para ver el itinerario.</p></div>
-              :buildItinerary().map(({abs,dest,localDay,items,transits:dayTransits})=>{
-                const realDate=dayToDate(dest,localDay);
+              :buildItinerary().map(({abs,date:rowDate,dest,localDay,items,transits:dayTransits})=>{
+                const realDate=rowDate&&!rowDate.startsWith("_")?rowDate:dayToDate(dest,localDay);
                 const isLastDay=localDay===dest.days;
                 const nextDest=trip.destinations[trip.destinations.indexOf(dest)+1];
                 const outboundTransits=(trip.transits||[]).filter(tr=>tr.fromDestId===dest.id&&(isLastDay||tr.date===realDate));
