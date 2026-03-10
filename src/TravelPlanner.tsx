@@ -245,24 +245,34 @@ export default function TravelPlanner({ user, onSignOut }) {
         input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent)!important}
         .hint{font-size:.68rem;color:var(--accent);margin-top:-.5rem;margin-bottom:.75rem;font-family:'DM Sans',sans-serif}
         .transit-card:hover{box-shadow:0 4px 20px rgba(28,28,30,.1)!important;transform:translateY(-1px)}
+        @media(max-width:768px){
+          .mobile-hide{display:none!important}
+          .nav-mobile{flex-wrap:wrap;height:auto!important;min-height:52px;padding:.5rem 1rem!important;gap:.4rem!important}
+          .nav-tabs-mobile{width:100%;order:10;justify-content:center}
+          .trip-layout{flex-direction:column!important;height:auto!important}
+          .sidebar-mobile{width:100%!important;max-height:none;border-right:none!important;border-bottom:1px solid var(--line)}
+          .sidebar-dests{max-height:150px;overflow-y:auto}
+          .main-content{min-height:calc(100vh - 52px)}
+          .modal-inner{max-width:95vw!important;padding:1.25rem!important;margin:.5rem}
+        }
       `}</style>
 
       {/* ── NAV ── */}
-      <nav style={{position:"sticky",top:0,zIndex:200,background:"#F7F4EF",borderBottom:"1px solid var(--line)",height:"52px",display:"flex",alignItems:"center",padding:"0 1.5rem",gap:".75rem"}}>
+      <nav className="nav-mobile" style={{position:"sticky",top:0,zIndex:200,background:"#F7F4EF",borderBottom:"1px solid var(--line)",height:"52px",display:"flex",alignItems:"center",padding:"0 1.5rem",gap:".75rem"}}>
         <button onClick={()=>setView("home")} style={{background:"none",border:"none",cursor:"pointer",display:"flex",alignItems:"center",gap:".5rem"}}>
           <span style={{fontSize:"1.2rem"}}>🧭</span>
           <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.1rem",fontWeight:600,color:"var(--ink)"}}>Suavid Travel Planner</span>
         </button>
         {view==="trip"&&trip&&<>
-          <span style={{color:"var(--line)",fontSize:"1.1rem"}}>›</span>
-          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".85rem",color:"var(--muted)"}}>{trip.emoji} {trip.name}</span>
-          {trip.startDate&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--muted)",background:"rgba(28,28,30,.05)",padding:".15rem .6rem",borderRadius:"10px"}}>
+          <span className="mobile-hide" style={{color:"var(--line)",fontSize:"1.1rem"}}>›</span>
+          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".85rem",color:"var(--muted)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"120px"}}>{trip.emoji} {trip.name}</span>
+          {trip.startDate&&<span className="mobile-hide" style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--muted)",background:"rgba(28,28,30,.05)",padding:".15rem .6rem",borderRadius:"10px"}}>
             {fmtShort(trip.startDate)} → {fmtShort(trip.endDate||addDays(trip.startDate,tripDays-1))} · {tripDays}d
           </span>}
         </>}
         <div style={{flex:1}}/>
         {view==="trip"&&trip&&(
-          <div style={{display:"flex",gap:".2rem",background:"rgba(28,28,30,.06)",borderRadius:"7px",padding:".2rem"}}>
+          <div className="nav-tabs-mobile" style={{display:"flex",gap:".2rem",background:"rgba(28,28,30,.06)",borderRadius:"7px",padding:".2rem"}}>
             {[["dest","📍 Destinos"],["transits","🚀 Trayectos"],["summary","📋 Resumen"]].map(([v,l])=>(
               <button key={v} onClick={()=>setTripView(v)} style={{background:tripView===v?"#fff":"transparent",border:"none",color:tripView===v?"var(--ink)":"var(--muted)",padding:".3rem .8rem",borderRadius:"5px",cursor:"pointer",fontSize:".76rem",fontWeight:tripView===v?500:400,boxShadow:tripView===v?"0 1px 4px rgba(28,28,30,.1)":"none",transition:"all .15s",whiteSpace:"nowrap"}}>{l}</button>
             ))}
@@ -274,7 +284,7 @@ export default function TravelPlanner({ user, onSignOut }) {
         {view==="trip"&&tripView==="transits"&&<button onClick={openNewTransit} style={{background:"var(--accent)",border:"none",color:"#fff",padding:".45rem 1.1rem",borderRadius:"6px",fontSize:".8rem",fontWeight:500,cursor:"pointer"}}>+ Trayecto</button>}
         {/* User menu */}
         <div style={{display:"flex",alignItems:"center",gap:".5rem",marginLeft:".5rem"}}>
-          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--muted)",maxWidth:"100px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{user?.displayName || user?.email}</span>
+          <span className="mobile-hide" style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--muted)",maxWidth:"100px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{user?.displayName || user?.email}</span>
           <button onClick={onSignOut} title="Cerrar sesión" style={{background:"rgba(28,28,30,.06)",border:"none",color:"var(--muted)",padding:".3rem .6rem",borderRadius:"5px",cursor:"pointer",fontSize:".72rem",fontFamily:"'DM Sans',sans-serif"}}>Salir</button>
         </div>
       </nav>
@@ -319,10 +329,10 @@ export default function TravelPlanner({ user, onSignOut }) {
       </div>}
 
       {/* ── TRIP VIEW ────────────────────────────────────────────────────────── */}
-      {view==="trip"&&trip&&<div style={{display:"flex",height:"calc(100vh - 52px)"}}>
+      {view==="trip"&&trip&&<div className="trip-layout" style={{display:"flex",height:"calc(100vh - 52px)"}}>
 
         {/* SIDEBAR */}
-        <aside style={{width:"224px",flexShrink:0,borderRight:"1px solid var(--line)",background:"#fff",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+        <aside className="sidebar-mobile" style={{width:"224px",flexShrink:0,borderRight:"1px solid var(--line)",background:"#fff",display:"flex",flexDirection:"column",overflow:"hidden"}}>
           <div style={{padding:"1rem 1rem .75rem",borderBottom:"1px solid var(--line)"}}>
             <div style={{fontSize:"1.5rem",marginBottom:".2rem"}}>{trip.emoji}</div>
             <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1rem",fontWeight:600,lineHeight:1.2,marginBottom:".2rem"}}>{trip.name}</div>
@@ -339,7 +349,7 @@ export default function TravelPlanner({ user, onSignOut }) {
           </div>
 
           {/* dest list */}
-          <div style={{flex:1,overflowY:"auto",padding:".4rem 0"}}>
+          <div className="sidebar-dests" style={{flex:1,overflowY:"auto",padding:".4rem 0"}}>
             {trip.destinations.length===0
               ?<div style={{padding:"1rem",textAlign:"center",color:"var(--muted)",fontFamily:"'DM Sans',sans-serif",fontSize:".75rem"}}>Añade tu primer destino →</div>
               :trip.destinations.map(d=>(
@@ -383,7 +393,7 @@ export default function TravelPlanner({ user, onSignOut }) {
         </aside>
 
         {/* MAIN */}
-        <main style={{flex:1,overflowY:"auto",background:"#F7F4EF"}}>
+        <main className="main-content" style={{flex:1,overflowY:"auto",background:"#F7F4EF"}}>
 
           {/* ── TRANSITS VIEW ───────────────────────────────────────────────── */}
           {tripView==="transits"&&<div style={{padding:"1.5rem 2rem",maxWidth:"860px"}}>
@@ -721,7 +731,7 @@ export default function TravelPlanner({ user, onSignOut }) {
 
       {/* ── MODALS ──────────────────────────────────────────────────────────── */}
       {modal&&<div onClick={closeModal} style={{position:"fixed",inset:0,background:"rgba(28,28,30,.5)",zIndex:500,display:"flex",alignItems:"center",justifyContent:"center",padding:"1rem"}}>
-        <div onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:"14px",padding:"2rem",width:"100%",maxWidth:modal==="newTransit"||modal==="editTransit"?"540px":"420px",boxShadow:"0 24px 80px rgba(28,28,30,.22)",maxHeight:"90vh",overflowY:"auto"}}>
+        <div className="modal-inner" onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:"14px",padding:"2rem",width:"100%",maxWidth:modal==="newTransit"||modal==="editTransit"?"540px":"420px",boxShadow:"0 24px 80px rgba(28,28,30,.22)",maxHeight:"90vh",overflowY:"auto"}}>
 
           {modal==="newTrip"&&<>
             <h3 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.5rem",fontWeight:600,margin:"0 0 1.5rem"}}>Nuevo viaje</h3>
