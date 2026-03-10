@@ -33,10 +33,19 @@ const CURRENCIES = [
   { code:"EUR", symbol:"€",   name:"Euro",            flag:"🇪🇺" },
   { code:"COP", symbol:"COP$",name:"Peso colombiano", flag:"🇨🇴" },
 ];
-const fmtMoney = (amount, currency) => {
-  const c = CURRENCIES.find(cc=>cc.code===currency) || CURRENCIES[0];
-  if (c.code==="COP") return `${c.symbol}${Math.round(amount).toLocaleString()}`;
-  return `${c.symbol}${amount.toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:2})}`;
+// All costs are stored in COP. fmtCOP formats as pesos, fmtAlt converts & formats in trip currency
+const fmtCOP = (amount) => `COP$${Math.round(amount).toLocaleString()}`;
+const fmtAlt = (amount, currency, rate) => {
+  if (!currency || currency==="COP" || !rate || rate<=0) return null;
+  const c = CURRENCIES.find(cc=>cc.code===currency);
+  const converted = amount / rate;
+  return `${c?.symbol||currency}${converted.toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:2})}`;
+};
+// Dual display: COP + optional alt currency
+const fmtDual = (amount, currency, rate) => {
+  const cop = fmtCOP(amount);
+  const alt = fmtAlt(amount, currency, rate);
+  return alt ? `${cop} (${alt})` : cop;
 };
 
 // ─── App ─────────────────────────────────────────────────────────────────────
@@ -95,8 +104,9 @@ export default function TravelPlanner({ user, onSignOut }) {
   const itemsCost    = trip?.destinations.reduce((s,d)=>s+d.items.reduce((ss,i)=>ss+(i.cost||0),0),0)||0;
   const transitsCost = trip?.transits?.reduce((s,t)=>s+(t.cost||0),0)||0;
   const totalCost    = itemsCost + transitsCost;
-  const cur = trip?.currency || "USD";
-  const fmt = (amount) => fmtMoney(amount, cur);
+  const cur = trip?.currency || "COP";
+  const rate = trip?.copRate || 0; // how many COP = 1 unit of trip currency
+  const fmt = (amount) => fmtDual(amount, cur, rate);
   const tripDays     = trip
     ? (trip.startDate&&trip.endDate ? diffDays(trip.startDate,trip.endDate)+1 : trip.destinations.reduce((s,d)=>s+d.days,0))
     : 0;
@@ -126,8 +136,8 @@ export default function TravelPlanner({ user, onSignOut }) {
     if (!form.name?.trim()) return;
     const t = { id:uid(), name:form.name, emoji:form.emoji||"🌍",
       startDate:form.startDate||"", endDate:form.endDate||"",
-      budget:Number(form.budget)||0, currency:form.currency||"USD",
-      exchangeRates:form.exchangeRates||{USD:1,EUR:1,COP:1},
+      budget:Number(form.budget)||0, currency:form.currency||"COP",
+      copRate:Number(form.copRate)||0,
       destinations:[], transits:[], created:Date.now() };
     setTrips(p=>[...p,t]); setActiveTrip(t.id); setView("trip"); setTripView("dest"); closeModal();
   };
@@ -327,7 +337,7 @@ export default function TravelPlanner({ user, onSignOut }) {
                 <div style={{display:"flex",gap:".5rem",flexWrap:"wrap",marginBottom:".75rem"}}>
                   <span style={{fontSize:".72rem",padding:".2rem .6rem",background:"rgba(28,28,30,.05)",borderRadius:"20px",color:"var(--muted)",fontFamily:"'DM Sans',sans-serif"}}>📍 {t.destinations.length} destinos</span>
                   {(t.transits||[]).length>0&&<span style={{fontSize:".72rem",padding:".2rem .6rem",background:"rgba(90,180,232,.1)",borderRadius:"20px",color:"#5AB4E8",fontFamily:"'DM Sans',sans-serif"}}>🚀 {t.transits.length} trayectos</span>}
-                  {cost>0&&<span style={{fontSize:".72rem",padding:".2rem .6rem",background:"rgba(196,98,45,.08)",borderRadius:"20px",color:"var(--accent)",fontFamily:"'DM Sans',sans-serif"}}>💰 {fmtMoney(cost,t.currency||"USD")}</span>}
+                  {cost>0&&<span style={{fontSize:".72rem",padding:".2rem .6rem",background:"rgba(196,98,45,.08)",borderRadius:"20px",color:"var(--accent)",fontFamily:"'DM Sans',sans-serif"}}>💰 {fmtDual(cost,t.currency||"COP",t.copRate||0)}</span>}
                 </div>
                 <div style={{display:"flex",gap:".3rem",flexWrap:"wrap"}}>
                   {t.destinations.slice(0,4).map(d=><span key={d.id} style={{fontSize:".7rem",padding:".15rem .5rem",background:d.color+"20",borderRadius:"4px",color:d.color,fontFamily:"'DM Sans',sans-serif",fontWeight:500}}>{d.emoji} {d.name}</span>)}
@@ -756,22 +766,19 @@ export default function TravelPlanner({ user, onSignOut }) {
               <div><Lbl>Fin</Lbl><Inp type="date" min={form.startDate||""} value={form.endDate||""} onChange={e=>setForm(p=>({...p,endDate:e.target.value}))}/></div>
             </div>
             {form.startDate&&form.endDate&&<p className="hint">📅 {diffDays(form.startDate,form.endDate)+1} días en total</p>}
-            <Lbl>Moneda principal</Lbl>
+            <Lbl>Mostrar también en otra moneda (opcional)</Lbl>
             <div style={{display:"flex",gap:".4rem",flexWrap:"wrap",marginBottom:"1rem"}}>
-              {CURRENCIES.map(c=>(
-                <button key={c.code} onClick={()=>setForm(p=>({...p,currency:c.code}))} style={{background:(form.currency||"USD")===c.code?"var(--accent)":"rgba(28,28,30,.05)",border:"none",color:(form.currency||"USD")===c.code?"#fff":"var(--muted)",padding:".4rem .8rem",borderRadius:"6px",cursor:"pointer",fontSize:".78rem",transition:"all .15s"}}>{c.flag} {c.code} ({c.symbol})</button>
+              <button onClick={()=>setForm(p=>({...p,currency:"COP",copRate:0}))} style={{background:(form.currency||"COP")==="COP"?"var(--accent)":"rgba(28,28,30,.05)",border:"none",color:(form.currency||"COP")==="COP"?"#fff":"var(--muted)",padding:".4rem .8rem",borderRadius:"6px",cursor:"pointer",fontSize:".78rem",transition:"all .15s"}}>🇨🇴 Solo COP</button>
+              {CURRENCIES.filter(c=>c.code!=="COP").map(c=>(
+                <button key={c.code} onClick={()=>setForm(p=>({...p,currency:c.code}))} style={{background:(form.currency||"COP")===c.code?"var(--accent)":"rgba(28,28,30,.05)",border:"none",color:(form.currency||"COP")===c.code?"#fff":"var(--muted)",padding:".4rem .8rem",borderRadius:"6px",cursor:"pointer",fontSize:".78rem",transition:"all .15s"}}>{c.flag} COP + {c.code} ({c.symbol})</button>
               ))}
             </div>
-            <Lbl>Tasas de cambio (a {(CURRENCIES.find(c=>c.code===(form.currency||"USD"))||CURRENCIES[0]).code})</Lbl>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".75rem",marginBottom:"1rem"}}>
-              {CURRENCIES.filter(c=>c.code!==(form.currency||"USD")).map(c=>(
-                <div key={c.code}>
-                  <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".7rem",color:"var(--muted)",marginBottom:".25rem"}}>{c.flag} 1 {c.code} =</div>
-                  <Inp type="number" min="0" step="any" placeholder={`Ej. ${c.code==="EUR"?"1.08":c.code==="USD"?"1":"4200"}`} value={(form.exchangeRates||{})[c.code]||""} onChange={e=>setForm(p=>({...p,exchangeRates:{...(p.exchangeRates||{}),[(form.currency||"USD")]:1,[c.code]:+e.target.value}}))}/>
-                </div>
-              ))}
-            </div>
-            <Lbl>Presupuesto ({(CURRENCIES.find(c=>c.code===(form.currency||"USD"))||CURRENCIES[0]).symbol})</Lbl><Inp type="number" placeholder="0" value={form.budget||""} onChange={e=>setForm(p=>({...p,budget:e.target.value}))}/>
+            {(form.currency||"COP")!=="COP"&&<>
+              <Lbl>Tasa de cambio: 1 {(CURRENCIES.find(c=>c.code===form.currency)||{}).symbol} = ¿cuántos COP?</Lbl>
+              <Inp type="number" min="0" step="any" placeholder={form.currency==="USD"?"Ej. 4200":"Ej. 4600"} value={form.copRate||""} onChange={e=>setForm(p=>({...p,copRate:+e.target.value}))}/>
+              {form.copRate>0&&<p className="hint">Ejemplo: COP$100,000 = {fmtAlt(100000,form.currency,form.copRate)}</p>}
+            </>}
+            <Lbl>Presupuesto (COP$)</Lbl><Inp type="number" placeholder="0" value={form.budget||""} onChange={e=>setForm(p=>({...p,budget:e.target.value}))}/>
             <Btns onCancel={closeModal} onOk={createTrip} label="Crear viaje"/>
           </>}
 
@@ -837,7 +844,7 @@ export default function TravelPlanner({ user, onSignOut }) {
               <div><Lbl>Proveedor / Aerolínea</Lbl><Inp placeholder="Ej. Avianca" value={form.provider||""} onChange={e=>setForm(p=>({...p,provider:e.target.value}))}/></div>
               <div><Lbl>N° Confirmación / Reserva</Lbl><Inp placeholder="Ej. ABC123" value={form.confirmation||""} onChange={e=>setForm(p=>({...p,confirmation:e.target.value}))}/></div>
             </div>
-            <Lbl>Costo ({(CURRENCIES.find(c=>c.code===cur)||CURRENCIES[0]).symbol})</Lbl><Inp type="number" min="0" placeholder="0" value={form.cost||""} onChange={e=>setForm(p=>({...p,cost:+e.target.value}))}/>
+            <Lbl>Costo (COP$)</Lbl><Inp type="number" min="0" placeholder="0" value={form.cost||""} onChange={e=>setForm(p=>({...p,cost:+e.target.value}))}/>
             <Lbl>Notas</Lbl>
             <textarea placeholder="Detalles, equipaje, instrucciones..." value={form.notes||""} onChange={e=>setForm(p=>({...p,notes:e.target.value}))} style={{width:"100%",border:"1px solid var(--line)",borderRadius:"6px",padding:".6rem .8rem",fontSize:".85rem",color:"var(--ink)",resize:"vertical",minHeight:"60px",background:"#F7F4EF",marginBottom:"1rem"}}/>
             <Btns onCancel={closeModal} onOk={modal==="editTransit"?saveTransit:addTransit} label={modal==="editTransit"?"Guardar cambios":"Agregar trayecto"}/>
@@ -863,7 +870,7 @@ export default function TravelPlanner({ user, onSignOut }) {
               <div><Lbl>Duración</Lbl><Inp placeholder="2h" value={form.duration||""} onChange={e=>setForm(p=>({...p,duration:e.target.value}))}/></div>
             </div>
             <Lbl>Dirección / Lugar</Lbl><Inp placeholder="Ej. Av. Principal 123" value={form.address||""} onChange={e=>setForm(p=>({...p,address:e.target.value}))}/>
-            <Lbl>Costo ({(CURRENCIES.find(c=>c.code===cur)||CURRENCIES[0]).symbol})</Lbl><Inp type="number" min="0" placeholder="0" value={form.cost||""} onChange={e=>setForm(p=>({...p,cost:+e.target.value}))}/>
+            <Lbl>Costo (COP$)</Lbl><Inp type="number" min="0" placeholder="0" value={form.cost||""} onChange={e=>setForm(p=>({...p,cost:+e.target.value}))}/>
             <Lbl>Notas</Lbl>
             <textarea placeholder="Reserva, detalles..." value={form.notes||""} onChange={e=>setForm(p=>({...p,notes:e.target.value}))} style={{width:"100%",border:"1px solid var(--line)",borderRadius:"6px",padding:".6rem .8rem",fontSize:".85rem",color:"var(--ink)",resize:"vertical",minHeight:"60px",background:"#F7F4EF",marginBottom:"1rem"}}/>
             <Btns onCancel={closeModal} onOk={modal==="editItem"?saveItem:addItem} label={modal==="editItem"?"Guardar cambios":"Agregar"}/>
