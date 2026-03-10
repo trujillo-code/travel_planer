@@ -141,8 +141,8 @@ export default function TravelPlanner({ user, onSignOut }) {
     if (!trip) return { startDate:"", endDate:"", days:3 };
     const dests = trip.destinations;
     let start = dests.length===0 ? (trip.startDate||"")
-      : (dests[dests.length-1].endDate ? addDays(dests[dests.length-1].endDate,1)
-         : dests[dests.length-1].startDate ? addDays(dests[dests.length-1].startDate, dests[dests.length-1].days) : "");
+      : (dests[dests.length-1].endDate ? dests[dests.length-1].endDate
+         : dests[dests.length-1].startDate ? addDays(dests[dests.length-1].startDate, dests[dests.length-1].days-1) : "");
     return { startDate:start, endDate:start?addDays(start,2):"", days:3 };
   };
 
@@ -595,6 +595,46 @@ export default function TravelPlanner({ user, onSignOut }) {
               </div>;
             })()}
 
+            {/* ── Calendar Grid ── */}
+            {trip.startDate&&trip.destinations.length>0&&(()=>{
+              const itinerary=buildItinerary();
+              if(itinerary.length===0) return null;
+              const startD=new Date(trip.startDate+"T00:00:00");
+              const firstDow=startD.getDay(); // 0=Sun
+              const monthLabels=[];
+              let lastMonth="";
+              itinerary.forEach(row=>{
+                const rd=dayToDate(row.dest,row.localDay);
+                if(rd){const m=new Date(rd+"T00:00:00").toLocaleDateString("es-ES",{month:"long",year:"numeric"});if(m!==lastMonth){monthLabels.push({abs:row.abs,label:m});lastMonth=m;}}
+              });
+              return <div style={{marginBottom:"2rem",background:"#fff",border:"1px solid var(--line)",borderRadius:"10px",padding:"1.25rem"}}>
+                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".08em",marginBottom:".75rem"}}>Calendario</div>
+                <div style={{display:"flex",gap:".3rem",marginBottom:".5rem"}}>
+                  {["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"].map(d=><div key={d} style={{flex:1,textAlign:"center",fontFamily:"'DM Sans',sans-serif",fontSize:".6rem",color:"var(--muted)",fontWeight:500}}>{d}</div>)}
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:".3rem"}}>
+                  {Array.from({length:firstDow}).map((_,i)=><div key={"e"+i}/>)}
+                  {itinerary.map(row=>{
+                    const rd=dayToDate(row.dest,row.localDay);
+                    const dayNum=rd?new Date(rd+"T00:00:00").getDate():"";
+                    const hasItems=row.items.length>0;
+                    const itemCount=row.items.length;
+                    const dayCost=sumCOP(row.items);
+                    return <div key={row.abs} title={`${row.dest.name} · Día ${row.localDay}${hasItems?` · ${itemCount} actividades`:""}`}
+                      style={{background:row.dest.color+"18",border:`1.5px solid ${row.dest.color}40`,borderRadius:"6px",padding:".25rem .15rem",textAlign:"center",minHeight:"48px",cursor:"pointer",transition:"all .15s",position:"relative"}}
+                      onClick={()=>{setActiveDestId(row.dest.id);setDayFilter(row.localDay);setTripView("dest");}}>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",fontWeight:600,color:row.dest.color}}>{dayNum}</div>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".5rem",color:row.dest.color+"cc",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{row.dest.emoji}{row.dest.name.slice(0,4)}</div>
+                      {hasItems&&<div style={{display:"flex",justifyContent:"center",gap:"1px",marginTop:"2px",flexWrap:"wrap"}}>
+                        {row.items.slice(0,3).map(it=><span key={it.id} style={{fontSize:".5rem"}}>{(ITEM_TYPES[it.type]||ITEM_TYPES.activity).icon}</span>)}
+                        {row.items.length>3&&<span style={{fontSize:".45rem",color:row.dest.color}}>+{row.items.length-3}</span>}
+                      </div>}
+                    </div>;
+                  })}
+                </div>
+              </div>;
+            })()}
+
             {trip.destinations.length===0
               ?<div style={{textAlign:"center",padding:"3rem",color:"var(--muted)",fontFamily:"'DM Sans',sans-serif"}}><div style={{fontSize:"2.5rem",marginBottom:".75rem"}}>🏝️</div><p>Añade destinos para ver el itinerario.</p></div>
               :buildItinerary().map(({abs,dest,localDay,items,transits:dayTransits})=>{
@@ -812,7 +852,7 @@ export default function TravelPlanner({ user, onSignOut }) {
 
           {modal==="newDest"&&<>
             <h3 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.5rem",fontWeight:600,margin:"0 0 .3rem"}}>Nuevo destino</h3>
-            {(()=>{const dests=trip?.destinations||[];if(dests.length===0&&trip?.startDate)return <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:"var(--accent)",margin:"0 0 1.25rem",background:"rgba(196,98,45,.07)",padding:".5rem .75rem",borderRadius:"6px"}}>📍 Primer destino — desde <strong>{fmtDate(trip.startDate)}</strong></p>;if(dests.length>0){const last=dests[dests.length-1];const e=last.endDate||(last.startDate?addDays(last.startDate,last.days-1):null);if(e)return <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:"var(--accent)",margin:"0 0 1.25rem",background:"rgba(196,98,45,.07)",padding:".5rem .75rem",borderRadius:"6px"}}>📍 Continuando desde <strong>{last.emoji} {last.name}</strong> — llegada sugerida <strong>{fmtDate(addDays(e,1))}</strong></p>;}return null;})()}
+            {(()=>{const dests=trip?.destinations||[];if(dests.length===0&&trip?.startDate)return <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:"var(--accent)",margin:"0 0 1.25rem",background:"rgba(196,98,45,.07)",padding:".5rem .75rem",borderRadius:"6px"}}>📍 Primer destino — desde <strong>{fmtDate(trip.startDate)}</strong></p>;if(dests.length>0){const last=dests[dests.length-1];const e=last.endDate||(last.startDate?addDays(last.startDate,last.days-1):null);if(e)return <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:"var(--accent)",margin:"0 0 1.25rem",background:"rgba(196,98,45,.07)",padding:".5rem .75rem",borderRadius:"6px"}}>📍 Continuando desde <strong>{last.emoji} {last.name}</strong> — llegada sugerida <strong>{fmtDate(e)}</strong></p>;}return null;})()}
             <Lbl>Emoji</Lbl><EmojiPick value={form.emoji||"📍"} onChange={v=>setForm(p=>({...p,emoji:v}))}/>
             <Lbl>Ciudad *</Lbl><Inp placeholder="Ej. Tokio" value={form.name||""} onChange={e=>setForm(p=>({...p,name:e.target.value}))}/>
             <Lbl>País</Lbl><Inp placeholder="Ej. Japón" value={form.country||""} onChange={e=>setForm(p=>({...p,country:e.target.value}))}/>
