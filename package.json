@@ -10,7 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "country-state-city": "^3.2.1",
     "firebase": "^12.10.0",
+    "geonames.js": "^3.0.6",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },

@@ -1,7 +1,8 @@
 // @ts-nocheck
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import { db } from "./firebase";
+import { City, Country } from "country-state-city";
 
 // ─── Date helpers ────────────────────────────────────────────────────────────
 const addDays  = (s, n) => { if (!s) return ""; const d = new Date(s+"T00:00:00"); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); };
@@ -27,6 +28,13 @@ const TRANSIT_TYPES = [
   { key:"other",     label:"Otro",           icon:"🛣️",  color:"#8AB85A" },
 ];
 const uid   = () => Math.random().toString(36).slice(2,9);
+const destEnd  = (d) => d.endDate || (d.startDate ? addDays(d.startDate, (d.days||1)-1) : "");
+const sortDests = (dests) => [...dests].sort((a,b) => {
+  const sa = a.startDate || "9999"; const sb = b.startDate || "9999";
+  if (sa !== sb) return sa < sb ? -1 : 1;
+  const ea = destEnd(a) || "9999"; const eb = destEnd(b) || "9999";
+  return ea < eb ? -1 : ea > eb ? 1 : 0;
+});
 const EMOJIS = ["🌍","🌎","🌏","✈️","🗺️","🏖️","🏔️","🎒","🏝️","🚀","🗼","🏰","🗡","🎭","🎪","🎠","🐚","🌅","🌵","🏠","🛕","🧳","🎑","🎸","🌸","🍜","☀️","❄️","🌊","⭐","🎿","🏴","🟠","🟡","🟢","🔵","🟣"];
 const CURRENCIES = [
   { code:"USD", symbol:"US$", name:"Dólar americano", flag:"🇺🇸" },
@@ -67,6 +75,8 @@ export default function TravelPlanner({ user, onSignOut }) {
   const [activeTrip,     setActiveTrip]     = useState(null);
   const [view,           setView]           = useState("home");
   const [tripView,       setTripView]       = useState("dest"); // dest | transits | summary
+  const [showEstimates,  setShowEstimates]  = useState(false);
+  const [budgetView,     setBudgetView]     = useState("general"); // general | detail
   const [modal,          setModal]          = useState(null);
   const [editingItem,    setEditingItem]    = useState(null);
   const [editingTransit, setEditingTransit] = useState(null);
@@ -110,7 +120,8 @@ export default function TravelPlanner({ user, onSignOut }) {
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, [trips, dataLoaded, user?.uid]);
 
-  const trip       = trips.find(t => t.id === activeTrip);
+  const _rawTrip   = trips.find(t => t.id === activeTrip);
+  const trip       = _rawTrip ? { ..._rawTrip, destinations: sortDests(_rawTrip.destinations) } : undefined;
   const activeDest = trip?.destinations.find(d => d.id === activeDestId);
 
   // ── Computed ───────────────────────────────────────────────────────────────
@@ -119,7 +130,6 @@ export default function TravelPlanner({ user, onSignOut }) {
   const _toCOP = (cost, costCur) => toCOP(cost||0, costCur||"COP", cur, rate);
   const itemsCost    = trip?.destinations.reduce((s,d)=>s+d.items.reduce((ss,i)=>ss+_toCOP(i.cost,i.costCurrency),0),0)||0;
   const transitsCost = trip?.transits?.reduce((s,t)=>s+_toCOP(t.cost,t.costCurrency),0)||0;
-  const totalCost    = itemsCost + transitsCost;
   // fmt: takes COP amount, shows dual
   const fmt = (copAmount) => {
     const altAmt = (cur!=="COP" && rate>0) ? copAmount/rate : null;
@@ -136,20 +146,84 @@ export default function TravelPlanner({ user, onSignOut }) {
     ? (trip.startDate&&trip.endDate ? diffDays(trip.startDate,trip.endDate)+1 : trip.destinations.reduce((s,d)=>s+d.days,0))
     : 0;
 
+  // ── Estimates helper (trip-level) ─────────────────────────────────────────
+  const estHotelRaw    = Number(trip?.estHotel) || 0;
+  const estFoodRaw     = Number(trip?.estFood) || 0;
+  const estActivityRaw = Number(trip?.estActivity) || 0;
+  const estCur         = trip?.estCurrency || "COP";
+  const estHotelCOP    = _toCOP(estHotelRaw, estCur);
+  const estFoodCOP     = _toCOP(estFoodRaw, estCur);
+  const estActivityCOP = _toCOP(estActivityRaw, estCur);
+  const hasEstimates   = estHotelCOP>0||estFoodCOP>0||estActivityCOP>0;
+
+  // Build date overlap map: date -> how many dests share that date
+  const dateOverlap = {};
+  if (trip) {
+    trip.destinations.forEach(d => {
+      if (!d.startDate) return;
+      for (let i = 0; i < d.days; i++) {
+        const dt = addDays(d.startDate, i);
+        dateOverlap[dt] = (dateOverlap[dt] || 0) + 1;
+      }
+    });
+  }
+
+  const calcEstimates = (d) => {
+    const nights = Math.max(0, d.days - 1);
+    const hotelItems = d.items.filter(i => i.type === "hotel");
+    let coveredNights = 0;
+    hotelItems.forEach(h => {
+      if (h.dayEnd && h.dayEnd > h.day) coveredNights += (h.dayEnd - h.day);
+      else coveredNights += 1;
+    });
+    const uncoveredNights = Math.max(0, nights - coveredNights);
+
+    // Weighted days: divide by number of dests sharing each date (for food/activities)
+    // Nights: NOT shared — you sleep in one place per night
+    let weightedDays = 0;
+    if (d.startDate) {
+      for (let i = 0; i < d.days; i++) {
+        const dt = addDays(d.startDate, i);
+        weightedDays += 1 / (dateOverlap[dt] || 1);
+      }
+    } else {
+      weightedDays = d.days;
+    }
+
+    const estHotelTotal = uncoveredNights * estHotelCOP;
+    const actualFoodCOP = d.items.filter(i => i.type === "food").reduce((s, i) => s + _toCOP(i.cost, i.costCurrency), 0);
+    const estFoodRemaining = Math.max(0, weightedDays * estFoodCOP - actualFoodCOP);
+    const actualActivityCOP = d.items.filter(i => i.type === "activity").reduce((s, i) => s + _toCOP(i.cost, i.costCurrency), 0);
+    const estActivityRemaining = Math.max(0, weightedDays * estActivityCOP - actualActivityCOP);
+    const total = estHotelTotal + estFoodRemaining + estActivityRemaining;
+    return { weightedDays: Math.round(weightedDays*10)/10, uncoveredNights, estHotelTotal, estFoodRemaining, estActivityRemaining, total };
+  };
+
+  const estimatesCost = hasEstimates ? (trip?.destinations.reduce((s,d)=>s+calcEstimates(d).total,0)||0) : 0;
+  const totalCost    = itemsCost + transitsCost + estimatesCost;
+
   // ── Smart date suggest for new dest ────────────────────────────────────────
   const suggestDates = () => {
     if (!trip) return { startDate:"", endDate:"", days:3 };
-    const dests = trip.destinations;
-    let start = dests.length===0 ? (trip.startDate||"")
-      : (dests[dests.length-1].endDate ? dests[dests.length-1].endDate
-         : dests[dests.length-1].startDate ? addDays(dests[dests.length-1].startDate, dests[dests.length-1].days-1) : "");
-    return { startDate:start, endDate:start?addDays(start,2):"", days:3 };
+    const dests = sortDests(trip.destinations);
+    if (dests.length === 0) {
+      const start = trip.startDate || "";
+      return { startDate: start, endDate: start ? addDays(start, 2) : "", days: 3 };
+    }
+    // Find the latest end date among all destinations
+    let latestEnd = "";
+    let latestDest = null;
+    for (const d of dests) {
+      const e = destEnd(d);
+      if (e && e > latestEnd) { latestEnd = e; latestDest = d; }
+    }
+    return { startDate: latestEnd, endDate: latestEnd ? addDays(latestEnd, 2) : "", days: 3, _prevDest: latestDest };
   };
 
   // Linked date/days handlers
   const setDestStart = sd => setForm(p=>({...p,startDate:sd,endDate:sd?addDays(sd,(Number(p.days)||3)-1):p.endDate}));
   const setDestEnd   = ed => setForm(p=>({...p,endDate:ed,days:Math.max(1,p.startDate&&ed?diffDays(p.startDate,ed)+1:p.days||3)}));
-  const setDestDays  = n  => { const days=Math.max(1,Number(n)||1); setForm(p=>({...p,days,endDate:p.startDate?addDays(p.startDate,days-1):p.endDate})); };
+  const setDestDays  = n  => { if(n===""||n===null||n===undefined)return setForm(p=>({...p,days:""})); const days=Math.max(1,Number(n)||1); setForm(p=>({...p,days,endDate:p.startDate?addDays(p.startDate,days-1):p.endDate})); };
 
   // Real date for local day in dest
   const dayToDate = (dest, localDay) => dest?.startDate ? addDays(dest.startDate, localDay-1) : null;
@@ -166,6 +240,7 @@ export default function TravelPlanner({ user, onSignOut }) {
       destinations:[], transits:[], created:Date.now() };
     setTrips(p=>[...p,t]); setActiveTrip(t.id); setView("trip"); setTripView("dest"); closeModal();
   };
+  const updateTrip = (patch) => { setTrips(p=>p.map(t=>t.id===activeTrip?{...t,...patch}:t)); };
   const deleteTrip = id => { setTrips(p=>p.filter(t=>t.id!==id)); if(activeTrip===id){setActiveTrip(null);setView("home");} };
 
   // ── CRUD: Destinations ─────────────────────────────────────────────────────
@@ -176,8 +251,11 @@ export default function TravelPlanner({ user, onSignOut }) {
     const dest = { id:uid(), name:form.name, country:form.country||"", emoji:form.emoji||"📍",
       startDate:form.startDate||"", endDate:form.endDate||"", days:Number(form.days)||1,
       color:DEST_COLORS[trip.destinations.length%DEST_COLORS.length], items:[] };
-    setTrips(p=>p.map(t=>t.id===activeTrip?{...t,destinations:[...t.destinations,dest]}:t));
+    setTrips(p=>p.map(t=>t.id===activeTrip?{...t,destinations:sortDests([...t.destinations,dest])}:t));
     setActiveDestId(dest.id); setDayFilter(null); closeModal();
+  };
+  const updateDest = (destId, patch) => {
+    setTrips(p=>p.map(t=>t.id===activeTrip?{...t,destinations:t.destinations.map(d=>d.id===destId?{...d,...patch}:d)}:t));
   };
   const deleteDest = destId => {
     setTrips(p=>p.map(t=>t.id===activeTrip?{...t,destinations:t.destinations.filter(d=>d.id!==destId)}:t));
@@ -188,7 +266,8 @@ export default function TravelPlanner({ user, onSignOut }) {
   const addItem = () => {
     if (!form.type||!activeDestId) return;
     const item = { id:uid(), type:form.type, title:form.title||"", time:form.time||"",
-      day:Number(form.day)||1, duration:form.duration||"", cost:Number(form.cost)||0,
+      day:Number(form.day)||1, dayEnd:form.dayEnd?Number(form.dayEnd):undefined,
+      duration:form.duration||"", cost:Number(form.cost)||0,
       costCurrency:form.costCurrency||"COP",
       address:form.address||"", notes:form.notes||"", confirmed:false };
     setTrips(p=>p.map(t=>t.id===activeTrip?{...t,destinations:t.destinations.map(d=>d.id===activeDestId?{...d,items:[...d.items,item]}:d)}:t));
@@ -201,7 +280,15 @@ export default function TravelPlanner({ user, onSignOut }) {
   };
   const deleteItem = (destId,itemId) => setTrips(p=>p.map(t=>t.id===activeTrip?{...t,destinations:t.destinations.map(d=>d.id===destId?{...d,items:d.items.filter(i=>i.id!==itemId)}:d)}:t));
   const toggleConfirm = (destId,itemId) => setTrips(p=>p.map(t=>t.id===activeTrip?{...t,destinations:t.destinations.map(d=>d.id===destId?{...d,items:d.items.map(i=>i.id===itemId?{...i,confirmed:!i.confirmed}:i)}:d)}:t));
-  const openEditItem = (destId,item) => { setActiveDestId(destId); setEditingItem(item); setForm({...item}); setModal("editItem"); };
+  const togglePaidItem = (destId,itemId) => setTrips(p=>p.map(t=>t.id===activeTrip?{...t,destinations:t.destinations.map(d=>d.id===destId?{...d,items:d.items.map(i=>i.id===itemId?{...i,paid:!i.paid}:i)}:d)}:t));
+  const togglePaidTransit = (trId) => setTrips(p=>p.map(t=>t.id===activeTrip?{...t,transits:(t.transits||[]).map(tr=>tr.id===trId?{...tr,paid:!tr.paid}:tr)}:t));
+  const openEditItem = (destId,item) => {
+    setActiveDestId(destId);setEditingItem(item);
+    const destDays = (activeDest?.id===destId?activeDest:trip?.destinations.find(d=>d.id===destId))?.days||1;
+    const allDays = item.day===1 && item.dayEnd>=destDays ? true : item.dayEnd ? false : false;
+    setForm({...item, _allDays: item.dayEnd ? allDays : false, dayEnd: item.dayEnd || undefined });
+    setModal("editItem");
+  };
 
   // ── CRUD: Transits ─────────────────────────────────────────────────────────
   const openNewTransit = () => {
@@ -249,28 +336,30 @@ export default function TravelPlanner({ user, onSignOut }) {
 
   // ── Filtered items for current dest ────────────────────────────────────────
   const filteredItems = activeDest
-    ? (dayFilter?activeDest.items.filter(i=>i.day===dayFilter):activeDest.items)
-        .sort((a,b)=>a.day-b.day||(a.time||"").localeCompare(b.time||""))
+    ? (dayFilter
+        ? activeDest.items.filter(i => i.day===dayFilter || (i.dayEnd && i.day<=dayFilter && i.dayEnd>=dayFilter))
+        : activeDest.items
+      ).sort((a,b)=>a.day-b.day||(a.time||"").localeCompare(b.time||""))
     : [];
 
   // ── Build full itinerary for summary (date-based, supports overlapping dests) ──
   const buildItinerary = () => {
     if (!trip) return [];
-    // Collect all date→dest entries
     const dateMap = {};
     trip.destinations.forEach(dest=>{
       for(let d=1;d<=dest.days;d++){
         const realDate = dest.startDate ? addDays(dest.startDate, d-1) : `_nodate_${dest.id}_${d}`;
         if(!dateMap[realDate]) dateMap[realDate] = [];
-        dateMap[realDate].push({ dest, localDay:d,
-          items:dest.items.filter(i=>i.day===d).sort((a,b)=>(a.time||"99").localeCompare(b.time||"99")),
+        // Items for this day: direct day match + hotels spanning into this day
+        const dayItems = dest.items.filter(i => i.day===d || (i.dayEnd && i.day<=d && i.dayEnd>=d))
+          .sort((a,b)=>(a.type==="hotel"?0:1)-(b.type==="hotel"?0:1)||(a.time||"99").localeCompare(b.time||"99"));
+        dateMap[realDate].push({ dest, localDay:d, items:dayItems,
           transits:(trip.transits||[]).filter(tr=>tr.fromDestId===dest.id && (
             !tr.date || tr.date===addDays(dest.startDate,d-1) || (!tr.date && d===dest.days)
           ))
         });
       }
     });
-    // Sort dates and flatten to rows
     const sortedDates = Object.keys(dateMap).sort();
     let abs=1, rows=[];
     sortedDates.forEach(date=>{
@@ -471,36 +560,89 @@ export default function TravelPlanner({ user, onSignOut }) {
               <button onClick={openNewTransit} style={{background:"var(--accent)",border:"none",color:"#fff",padding:".55rem 1.2rem",borderRadius:"8px",fontSize:".82rem",fontWeight:500,cursor:"pointer",whiteSpace:"nowrap"}}>+ Agregar</button>
             </div>
 
-            {trip.destinations.length>=2&&<div style={{marginBottom:"2rem",padding:"1.25rem 1.5rem",background:"#fff",border:"1px solid var(--line)",borderRadius:"12px"}}>
-              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".08em",marginBottom:"1rem"}}>Ruta del viaje</div>
-              <div style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:0}}>
-                {trip.destinations.map((d,i)=>{
-                  const transitBetween = (trip.transits||[]).filter(tr=>tr.fromDestId===d.id&&tr.toDestId===trip.destinations[i+1]?.id);
-                  return <div key={d.id} style={{display:"flex",alignItems:"center"}}>
-                    <div style={{display:"flex",flexDirection:"column",alignItems:"center",padding:"0 .5rem"}}>
-                      <div style={{width:"38px",height:"38px",borderRadius:"50%",background:d.color+"20",border:`2px solid ${d.color}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.1rem"}}>{d.emoji}</div>
-                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",fontWeight:600,color:d.color,marginTop:".25rem",maxWidth:"70px",textAlign:"center",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{d.name}</div>
-                      {d.startDate&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".58rem",color:"var(--muted)"}}>{fmtShort(d.startDate)}</div>}
-                    </div>
-                    {i<trip.destinations.length-1&&<div style={{display:"flex",flexDirection:"column",alignItems:"center",minWidth:"60px"}}>
-                      {transitBetween.length>0
-                        ?transitBetween.map(tr=>{
-                          const tt=ttInfo(tr.transitType);
-                          return <div key={tr.id} style={{display:"flex",alignItems:"center",gap:".25rem",padding:".15rem .5rem",background:tt.color+"15",borderRadius:"10px",border:`1px solid ${tt.color}40`,cursor:"pointer"}} onClick={()=>openEditTransit(tr)}>
-                            <span style={{fontSize:".85rem"}}>{tt.icon}</span>
-                            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".62rem",color:tt.color,fontWeight:500}}>{tr.title||tt.label}</span>
-                          </div>;
-                        })
-                        :<div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:".15rem"}}>
-                          <div style={{height:"2px",width:"40px",background:"rgba(28,28,30,.1)",borderRadius:"1px"}}/>
-                          <button onClick={()=>{setForm({transitType:"flight",fromDestId:d.id,toDestId:trip.destinations[i+1]?.id||"",date:d.endDate||""});setModal("newTransit");}} style={{fontFamily:"'DM Sans',sans-serif",fontSize:".6rem",color:"var(--accent)",background:"none",border:"1px dashed rgba(196,98,45,.3)",padding:".1rem .4rem",borderRadius:"8px",cursor:"pointer"}}>+ añadir</button>
+            {trip.destinations.length>=2&&(()=>{
+              // Build rental coverage: for each rental, find which dest indices it covers
+              const dests = trip.destinations;
+              const rentalCoverage = {};
+              (trip.transits||[]).filter(tr=>isRental(tr.transitType)).forEach(tr=>{
+                const fromIdx = dests.findIndex(d=>d.id===tr.fromDestId);
+                const toIdx   = dests.findIndex(d=>d.id===tr.toDestId);
+                if(fromIdx<0||toIdx<0) return;
+                const lo=Math.min(fromIdx,toIdx), hi=Math.max(fromIdx,toIdx);
+                for(let i=lo;i<hi;i++){
+                  if(!rentalCoverage[i]) rentalCoverage[i]=[];
+                  rentalCoverage[i].push(tr);
+                }
+              });
+
+              return <div style={{marginBottom:"2rem",padding:"1.25rem 1.5rem",background:"#fff",border:"1px solid var(--line)",borderRadius:"12px"}}>
+                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".08em",marginBottom:"1rem"}}>Ruta del viaje</div>
+
+                {/* Rental bars */}
+                {(()=>{
+                  const rentals = (trip.transits||[]).filter(tr=>isRental(tr.transitType));
+                  if(!rentals.length) return null;
+                  return <div style={{marginBottom:".75rem",display:"flex",flexDirection:"column",gap:".4rem"}}>
+                    {rentals.map(tr=>{
+                      const tt=ttInfo(tr.transitType);
+                      const fromIdx=dests.findIndex(d=>d.id===tr.fromDestId);
+                      const toIdx=dests.findIndex(d=>d.id===tr.toDestId);
+                      if(fromIdx<0||toIdx<0) return null;
+                      const lo=Math.min(fromIdx,toIdx), hi=Math.max(fromIdx,toIdx);
+                      const covered=dests.slice(lo,hi+1);
+                      return <div key={tr.id} onClick={()=>openEditTransit(tr)} style={{display:"flex",alignItems:"center",gap:".4rem",padding:".4rem .7rem",background:tt.color+"10",border:`1px solid ${tt.color}35`,borderRadius:"8px",cursor:"pointer"}}>
+                        <span style={{fontSize:"1rem"}}>{tt.icon}</span>
+                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",fontWeight:600,color:tt.color}}>{tr.title||tt.label}</span>
+                        <div style={{display:"flex",alignItems:"center",gap:".2rem",flex:1,flexWrap:"wrap"}}>
+                          {covered.map((d,ci)=><span key={d.id} style={{display:"flex",alignItems:"center",gap:".15rem"}}>
+                            {ci>0&&<span style={{color:tt.color,fontSize:".7rem",margin:"0 .1rem"}}>→</span>}
+                            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",padding:".1rem .4rem",background:d.color+"18",borderRadius:"4px",color:d.color,fontWeight:500}}>{d.emoji} {d.name}</span>
+                          </span>)}
                         </div>
-                      }
-                    </div>}
+                        {tr.date&&tr.returnDate&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".6rem",color:"var(--muted)",whiteSpace:"nowrap"}}>{fmtShort(tr.date)}→{fmtShort(tr.returnDate)}</span>}
+                        {tr.cost>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".65rem",color:"var(--accent)",fontWeight:500}}>{fmtI(tr.cost,tr.costCurrency)}</span>}
+                      </div>;
+                    })}
                   </div>;
-                })}
-              </div>
-            </div>}
+                })()}
+
+                <div style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:0}}>
+                  {dests.map((d,i)=>{
+                    // Non-rental transits between consecutive dests
+                    const transitBetween = (trip.transits||[]).filter(tr=>!isRental(tr.transitType)&&tr.fromDestId===d.id&&tr.toDestId===dests[i+1]?.id);
+                    // Rental connecting this gap
+                    const rentalHere = rentalCoverage[i] || [];
+                    return <div key={d.id} style={{display:"flex",alignItems:"center"}}>
+                      <div style={{display:"flex",flexDirection:"column",alignItems:"center",padding:"0 .5rem"}}>
+                        <div style={{width:"38px",height:"38px",borderRadius:"50%",background:d.color+"20",border:`2px solid ${d.color}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"1.1rem"}}>{d.emoji}</div>
+                        <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",fontWeight:600,color:d.color,marginTop:".25rem",maxWidth:"70px",textAlign:"center",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{d.name}</div>
+                        {d.startDate&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".58rem",color:"var(--muted)"}}>{fmtShort(d.startDate)}</div>}
+                      </div>
+                      {i<dests.length-1&&<div style={{display:"flex",flexDirection:"column",alignItems:"center",minWidth:"60px"}}>
+                        {transitBetween.length>0
+                          ?transitBetween.map(tr=>{
+                            const tt=ttInfo(tr.transitType);
+                            return <div key={tr.id} style={{display:"flex",alignItems:"center",gap:".25rem",padding:".15rem .5rem",background:tt.color+"15",borderRadius:"10px",border:`1px solid ${tt.color}40`,cursor:"pointer"}} onClick={()=>openEditTransit(tr)}>
+                              <span style={{fontSize:".85rem"}}>{tt.icon}</span>
+                              <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".62rem",color:tt.color,fontWeight:500}}>{tr.title||tt.label}</span>
+                            </div>;
+                          })
+                          :rentalHere.length>0
+                            ?<div style={{display:"flex",alignItems:"center",gap:".2rem",padding:".1rem .4rem",background:"#E8C45A15",borderRadius:"8px",border:"1px solid #E8C45A35"}}>
+                              <span style={{fontSize:".75rem"}}>🚗</span>
+                              <div style={{height:"2px",width:"25px",background:"#E8C45A",borderRadius:"1px"}}/>
+                            </div>
+                            :<div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:".15rem"}}>
+                              <div style={{height:"2px",width:"40px",background:"rgba(28,28,30,.1)",borderRadius:"1px"}}/>
+                              <button onClick={()=>{setForm({transitType:"flight",fromDestId:d.id,toDestId:dests[i+1]?.id||"",date:d.endDate||""});setModal("newTransit");}} style={{fontFamily:"'DM Sans',sans-serif",fontSize:".6rem",color:"var(--accent)",background:"none",border:"1px dashed rgba(196,98,45,.3)",padding:".1rem .4rem",borderRadius:"8px",cursor:"pointer"}}>+ añadir</button>
+                            </div>
+                        }
+                      </div>}
+                    </div>;
+                  })}
+                </div>
+              </div>;
+            })()}
 
             {(trip.transits||[]).length===0
               ?<div style={{border:"2px dashed rgba(28,28,30,.12)",borderRadius:"12px",padding:"3rem 2rem",textAlign:"center",color:"var(--muted)",fontFamily:"'DM Sans',sans-serif"}}>
@@ -568,41 +710,142 @@ export default function TravelPlanner({ user, onSignOut }) {
               </p>
             </div>
 
-            {trip.destinations.length>0&&<div style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:".2rem",marginBottom:"1.5rem",padding:"1rem 1.25rem",background:"#fff",border:"1px solid var(--line)",borderRadius:"10px",overflowX:"auto"}}>
-              {trip.destinations.map((d,i)=>{
-                const trs=(trip.transits||[]).filter(tr=>tr.fromDestId===d.id&&tr.toDestId===trip.destinations[i+1]?.id);
-                return <div key={d.id} style={{display:"flex",alignItems:"center",gap:".2rem"}}>
-                  <div style={{padding:".3rem .7rem",background:d.color+"18",borderRadius:"20px",border:`1px solid ${d.color}40`}}>
-                    <div style={{display:"flex",alignItems:"center",gap:".35rem"}}>
-                      <span style={{fontSize:".9rem"}}>{d.emoji}</span>
-                      <div>
-                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",fontWeight:500,color:d.color}}>{d.name}</span>
-                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".62rem",color:d.color+"aa",marginLeft:".3rem"}}>{d.days}d</span>
-                        {d.startDate&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".6rem",color:d.color+"88"}}>{fmtShort(d.startDate)}→{fmtShort(d.endDate)}</div>}
+            {trip.destinations.length>0&&(()=>{
+              const dests=trip.destinations;
+              const rentalCov={};
+              (trip.transits||[]).filter(tr=>isRental(tr.transitType)).forEach(tr=>{
+                const fi=dests.findIndex(d=>d.id===tr.fromDestId),ti=dests.findIndex(d=>d.id===tr.toDestId);
+                if(fi<0||ti<0)return;const lo=Math.min(fi,ti),hi=Math.max(fi,ti);
+                for(let i=lo;i<hi;i++){if(!rentalCov[i])rentalCov[i]=[];rentalCov[i].push(tr);}
+              });
+              const rentals=(trip.transits||[]).filter(tr=>isRental(tr.transitType));
+
+              return <div style={{marginBottom:"1.5rem",padding:"1rem 1.25rem",background:"#fff",border:"1px solid var(--line)",borderRadius:"10px"}}>
+                {rentals.length>0&&<div style={{display:"flex",flexDirection:"column",gap:".35rem",marginBottom:".75rem"}}>
+                  {rentals.map(tr=>{
+                    const tt=ttInfo(tr.transitType);
+                    const fi=dests.findIndex(d=>d.id===tr.fromDestId),ti=dests.findIndex(d=>d.id===tr.toDestId);
+                    if(fi<0||ti<0)return null;
+                    const covered=dests.slice(Math.min(fi,ti),Math.max(fi,ti)+1);
+                    return <div key={tr.id} style={{display:"flex",alignItems:"center",gap:".35rem",padding:".3rem .6rem",background:tt.color+"10",border:`1px solid ${tt.color}30`,borderRadius:"8px",fontSize:".7rem",fontFamily:"'DM Sans',sans-serif"}}>
+                      <span style={{fontSize:".85rem"}}>{tt.icon}</span>
+                      <span style={{fontWeight:600,color:tt.color}}>{tr.title||tt.label}</span>
+                      {covered.map((cd,ci)=><span key={cd.id} style={{display:"flex",alignItems:"center",gap:".1rem"}}>
+                        {ci>0&&<span style={{color:tt.color,fontSize:".65rem"}}>→</span>}
+                        <span style={{color:cd.color,fontWeight:500}}>{cd.emoji}{cd.name}</span>
+                      </span>)}
+                      {tr.date&&tr.returnDate&&<span style={{color:"var(--muted)",fontSize:".6rem",marginLeft:"auto"}}>{fmtShort(tr.date)}→{fmtShort(tr.returnDate)}</span>}
+                    </div>;
+                  })}
+                </div>}
+                <div style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:".2rem",overflowX:"auto"}}>
+                  {dests.map((d,i)=>{
+                    const trs=(trip.transits||[]).filter(tr=>!isRental(tr.transitType)&&tr.fromDestId===d.id&&tr.toDestId===dests[i+1]?.id);
+                    const hasRental=!!rentalCov[i];
+                    return <div key={d.id} style={{display:"flex",alignItems:"center",gap:".2rem"}}>
+                      <div style={{padding:".3rem .7rem",background:d.color+"18",borderRadius:"20px",border:`1px solid ${d.color}40`}}>
+                        <div style={{display:"flex",alignItems:"center",gap:".35rem"}}>
+                          <span style={{fontSize:".9rem"}}>{d.emoji}</span>
+                          <div>
+                            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",fontWeight:500,color:d.color}}>{d.name}</span>
+                            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".62rem",color:d.color+"aa",marginLeft:".3rem"}}>{d.days}d</span>
+                            {d.startDate&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".6rem",color:d.color+"88"}}>{fmtShort(d.startDate)}→{fmtShort(d.endDate)}</div>}
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  </div>
-                  {i<trip.destinations.length-1&&<div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:".1rem",padding:"0 .1rem"}}>
-                    {trs.length>0
-                      ?trs.map(tr=>{const tt=ttInfo(tr.transitType);return <span key={tr.id} title={tr.title||tt.label} style={{fontSize:".9rem"}}>{tt.icon}</span>;})
-                      :<span style={{color:"var(--muted)",fontSize:".8rem"}}>→</span>
-                    }
-                  </div>}
-                </div>;
-              })}
-            </div>}
+                      {i<dests.length-1&&<div style={{display:"flex",alignItems:"center",gap:".1rem",padding:"0 .1rem"}}>
+                        {trs.length>0
+                          ?trs.map(tr=>{const tt=ttInfo(tr.transitType);return <span key={tr.id} title={tr.title||tt.label} style={{fontSize:".9rem"}}>{tt.icon}</span>;})
+                          :hasRental
+                            ?<span style={{fontSize:".75rem",color:"#E8C45A"}} title="Auto alquilado">🚗</span>
+                            :<span style={{color:"var(--muted)",fontSize:".8rem"}}>→</span>
+                        }
+                      </div>}
+                    </div>;
+                  })}
+                </div>
+              </div>;
+            })()}
 
             {(()=>{
               const all=trip.destinations.flatMap(d=>d.items);
               const conf=all.filter(i=>i.confirmed).length;
               const tconf=(trip.transits||[]).filter(t=>t.confirmed).length;
               return <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:".75rem",marginBottom:"2rem"}}>
-                {[["📅","Días",tripDays],["📍","Destinos",trip.destinations.length],["🚀","Trayectos",`${tconf}/${(trip.transits||[]).length}`],["🎯","Actividades",all.filter(i=>i.type==="activity").length],["🏨","Hospedajes",all.filter(i=>i.type==="hotel").length],["✓","Confirmados",`${conf}/${all.length}`],["💰","Total",fmt(totalCost)]].map(([ic,lb,vl])=>(
+                {[["📅","Días",tripDays],["📍","Destinos",trip.destinations.length],["🚀","Trayectos",`${tconf}/${(trip.transits||[]).length}`],["🎯","Actividades",all.filter(i=>i.type==="activity").length],["🏨","Hospedajes",all.filter(i=>i.type==="hotel").length],["✓","Confirmados",`${conf}/${all.length}`]].map(([ic,lb,vl])=>(
                   <div key={lb} style={{background:"#fff",border:"1px solid var(--line)",borderRadius:"8px",padding:".9rem 1rem"}}>
                     <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"1.1rem",fontWeight:600,color:"var(--accent)"}}>{vl}</div>
                     <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".65rem",color:"var(--muted)",marginTop:".1rem",textTransform:"uppercase",letterSpacing:".05em"}}>{ic} {lb}</div>
                   </div>
                 ))}
+                {totalCost>0&&<div style={{background:"#fff",border:"1px solid var(--line)",borderRadius:"8px",padding:".9rem 1rem",gridColumn:"span 2"}}>
+                  <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".95rem",fontWeight:600,color:"var(--accent)"}}>{fmt(totalCost)}</div>
+                  <div style={{display:"flex",gap:".75rem",marginTop:".2rem",fontFamily:"'DM Sans',sans-serif",fontSize:".62rem"}}>
+                    <span style={{color:"var(--muted)",textTransform:"uppercase",letterSpacing:".05em"}}>💰 Total</span>
+                    {itemsCost+transitsCost>0&&<span style={{color:"var(--ink)"}}>Registrado: {fmt(itemsCost+transitsCost)}</span>}
+                    {estimatesCost>0&&<span style={{color:"var(--muted)"}}>+ Est: {fmt(estimatesCost)}</span>}
+                  </div>
+                </div>}
+              </div>;
+            })()}
+
+            {/* ── Trip-level estimates ── */}
+            {(()=>{
+              const eCur = trip.estCurrency||"COP";
+              const curBtn = (field) => <div style={{display:"flex",gap:".2rem",flexShrink:0}}>
+                <button onClick={()=>updateTrip({estCurrency:"COP"})} style={{background:eCur==="COP"?"var(--accent)":"rgba(28,28,30,.06)",border:"none",color:eCur==="COP"?"#fff":"var(--muted)",padding:".3rem .45rem",borderRadius:"5px",cursor:"pointer",fontSize:".65rem"}}>COP</button>
+                {cur!=="COP"&&<button onClick={()=>updateTrip({estCurrency:cur})} style={{background:eCur===cur?"var(--accent)":"rgba(28,28,30,.06)",border:"none",color:eCur===cur?"#fff":"var(--muted)",padding:".3rem .45rem",borderRadius:"5px",cursor:"pointer",fontSize:".65rem"}}>{(CURRENCIES.find(c=>c.code===cur)||{}).symbol||cur}</button>}
+              </div>;
+              const inp = (val,key) => <input type="number" min="0" placeholder="0" value={val||""} onChange={e=>updateTrip({[key]:+e.target.value})}
+                style={{flex:1,minWidth:0,border:"1px solid rgba(28,28,30,.12)",borderRadius:"6px",padding:".45rem .6rem",fontSize:".82rem",color:"#1C1C1E",background:"#F7F4EF"}}/>;
+              return <div style={{marginBottom:"2rem",padding:"1rem 1.5rem",background:"#fff",border:"1px solid var(--line)",borderRadius:"10px"}}>
+                <div onClick={()=>setShowEstimates(p=>!p)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",userSelect:"none"}}>
+                  <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".08em"}}>
+                    Estimados diarios {hasEstimates&&<span style={{color:"var(--accent)",fontWeight:500,textTransform:"none",letterSpacing:0}}>· pendiente {fmt(estimatesCost)}</span>}
+                  </div>
+                  <span style={{fontSize:".8rem",color:"var(--muted)",transition:"transform .2s",transform:showEstimates?"rotate(180deg)":"rotate(0)"}}>{showEstimates?"▾":"▸"}</span>
+                </div>
+                {showEstimates&&<><div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:".75rem",marginTop:"1rem",marginBottom:".75rem"}}>
+                  <div>
+                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",color:"#7EC87E",fontWeight:500,marginBottom:".3rem"}}>🏨 Hospedaje/noche</div>
+                    <div style={{display:"flex",gap:".3rem",alignItems:"center"}}>{inp(trip.estHotel,"estHotel")}{curBtn()}</div>
+                  </div>
+                  <div>
+                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",color:"#E8845A",fontWeight:500,marginBottom:".3rem"}}>🍽️ Comida/día</div>
+                    <div style={{display:"flex",gap:".3rem",alignItems:"center"}}>{inp(trip.estFood,"estFood")}{curBtn()}</div>
+                  </div>
+                  <div>
+                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",color:"#5AB4E8",fontWeight:500,marginBottom:".3rem"}}>🎯 Actividades/día</div>
+                    <div style={{display:"flex",gap:".3rem",alignItems:"center"}}>{inp(trip.estActivity,"estActivity")}{curBtn()}</div>
+                  </div>
+                </div>
+                {hasEstimates&&trip.destinations.length>0&&<div style={{padding:".6rem .75rem",background:"rgba(28,28,30,.02)",borderRadius:"8px",border:"1px solid rgba(28,28,30,.06)"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontFamily:"'DM Sans',sans-serif",fontSize:".72rem"}}>
+                    <thead><tr style={{color:"var(--muted)",fontSize:".62rem",textTransform:"uppercase",letterSpacing:".05em"}}>
+                      <th style={{textAlign:"left",padding:".2rem 0",fontWeight:500}}>Destino</th>
+                      {estHotelCOP>0&&<th style={{textAlign:"center",padding:".2rem",fontWeight:500}}>🏨</th>}
+                      {estFoodCOP>0&&<th style={{textAlign:"center",padding:".2rem",fontWeight:500}}>🍽️</th>}
+                      {estActivityCOP>0&&<th style={{textAlign:"center",padding:".2rem",fontWeight:500}}>🎯</th>}
+                      <th style={{textAlign:"right",padding:".2rem 0",fontWeight:500}}>Pend.</th>
+                    </tr></thead>
+                    <tbody>{trip.destinations.map(d=>{
+                      const est=calcEstimates(d);
+                      if(!est.total) return null;
+                      return <tr key={d.id} style={{borderTop:"1px solid rgba(28,28,30,.04)"}}>
+                        <td style={{padding:".3rem 0"}}>{d.emoji} {d.name}</td>
+                        {estHotelCOP>0&&<td style={{textAlign:"center",color:"#7EC87E",padding:".3rem .2rem"}}>{est.uncoveredNights>0?`${est.uncoveredNights}n`:"✓"}</td>}
+                        {estFoodCOP>0&&<td style={{textAlign:"center",color:"#E8845A",padding:".3rem .2rem"}}>{est.estFoodRemaining>0?`${est.weightedDays}d`:"✓"}</td>}
+                        {estActivityCOP>0&&<td style={{textAlign:"center",color:"#5AB4E8",padding:".3rem .2rem"}}>{est.estActivityRemaining>0?`${est.weightedDays}d`:"✓"}</td>}
+                        <td style={{textAlign:"right",color:"var(--accent)",fontWeight:500,padding:".3rem 0"}}>{fmt(est.total)}</td>
+                      </tr>;
+                    })}</tbody>
+                    <tfoot><tr style={{borderTop:"1px solid rgba(28,28,30,.1)"}}>
+                      <td colSpan={1+(estHotelCOP>0?1:0)+(estFoodCOP>0?1:0)+(estActivityCOP>0?1:0)} style={{padding:".4rem 0",fontWeight:500,color:"var(--muted)"}}>Total pendiente</td>
+                      <td style={{textAlign:"right",padding:".4rem 0",fontWeight:600,color:"var(--accent)"}}>{fmt(estimatesCost)}</td>
+                    </tr></tfoot>
+                  </table>
+                </div>}
+                </>}
               </div>;
             })()}
 
@@ -622,124 +865,252 @@ export default function TravelPlanner({ user, onSignOut }) {
               if(dates.length===0) return null;
               const startD=new Date(dates[0]+"T00:00:00");
               const firstDow=startD.getDay();
-              return <div style={{marginBottom:"2rem",background:"#fff",border:"1px solid var(--line)",borderRadius:"10px",padding:"1.25rem"}}>
-                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".08em",marginBottom:".75rem"}}>Calendario</div>
-                <div style={{display:"flex",gap:".3rem",marginBottom:".5rem"}}>
-                  {["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"].map(d=><div key={d} style={{flex:1,textAlign:"center",fontFamily:"'DM Sans',sans-serif",fontSize:".6rem",color:"var(--muted)",fontWeight:500}}>{d}</div>)}
+              // Find transits by date
+              const transitsByDate={};
+              (trip.transits||[]).forEach(tr=>{
+                if(tr.date){if(!transitsByDate[tr.date])transitsByDate[tr.date]=[];transitsByDate[tr.date].push(tr);}
+                if(tr.returnDate&&tr.returnDate!==tr.date){if(!transitsByDate[tr.returnDate])transitsByDate[tr.returnDate]=[];transitsByDate[tr.returnDate].push(tr);}
+              });
+
+              return <div style={{marginBottom:"2rem",background:"#fff",border:"1px solid var(--line)",borderRadius:"10px",padding:"1.25rem 1.5rem"}}>
+                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".08em",marginBottom:"1rem"}}>Calendario</div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:".4rem",marginBottom:".5rem"}}>
+                  {["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"].map(d=><div key={d} style={{textAlign:"center",fontFamily:"'DM Sans',sans-serif",fontSize:".7rem",color:"var(--muted)",fontWeight:600,padding:".35rem 0"}}>{d}</div>)}
                 </div>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:".3rem"}}>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:".4rem"}}>
                   {Array.from({length:firstDow}).map((_,i)=><div key={"e"+i}/>)}
                   {dates.map(date=>{
                     const entries=byDate[date];
                     const dayNum=new Date(date+"T00:00:00").getDate();
+                    const monthStr=new Date(date+"T00:00:00").toLocaleDateString("es-ES",{month:"short"});
                     const allItems=entries.flatMap(e=>e.items);
                     const multi=entries.length>1;
                     const first=entries[0];
-                    // Gradient background for multiple dests
+                    const dayTransits=transitsByDate[date]||[];
+                    const hotels=allItems.filter(i=>i.type==="hotel");
+                    const activities=allItems.filter(i=>i.type==="activity");
+                    const foods=allItems.filter(i=>i.type==="food");
+                    const notes=allItems.filter(i=>i.type==="note");
                     const bg=multi
-                      ?`linear-gradient(135deg, ${entries.map((e,i)=>`${e.dest.color}18 ${(i/(entries.length))*100}%, ${e.dest.color}18 ${((i+1)/entries.length)*100}%`).join(", ")})`
-                      :first.dest.color+"18";
-                    const borderColor=multi?"var(--accent)":first.dest.color+"40";
-                    return <div key={date} title={entries.map(e=>`${e.dest.name} · Día ${e.localDay}`).join(" + ")}
-                      style={{background:bg,border:`1.5px solid ${borderColor}`,borderRadius:"6px",padding:".25rem .15rem",textAlign:"center",minHeight:"48px",cursor:"pointer",transition:"all .15s"}}
-                      onClick={()=>{setActiveDestId(first.dest.id);setDayFilter(first.localDay);setTripView("dest");}}>
-                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",fontWeight:600,color:multi?"var(--ink)":first.dest.color}}>{dayNum}</div>
-                      <div style={{display:"flex",justifyContent:"center",gap:"1px",flexWrap:"wrap"}}>
-                        {entries.map(e=><span key={e.dest.id} style={{fontSize:".5rem",color:e.dest.color+"cc"}} title={e.dest.name}>{e.dest.emoji}</span>)}
+                      ?`linear-gradient(135deg, ${entries.map((e,i)=>`${e.dest.color}15 ${(i/entries.length)*100}%, ${e.dest.color}15 ${((i+1)/entries.length)*100}%`).join(", ")})`
+                      :first.dest.color+"10";
+                    const itemClick=(e,destId,localDay)=>{e.stopPropagation();setActiveDestId(destId);setDayFilter(localDay);setTripView("dest");};
+                    return <div key={date}
+                      style={{background:bg,border:`1.5px solid ${multi?"var(--accent)40":first.dest.color+"25"}`,borderRadius:"8px",padding:".4rem",minHeight:"100px",cursor:"default",transition:"all .15s",display:"flex",flexDirection:"column",gap:"3px"}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"2px",padding:"0 .1rem"}}>
+                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".85rem",fontWeight:700,color:multi?"var(--ink)":first.dest.color}}>{dayNum}</span>
+                        {dayNum===1&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".58rem",color:"var(--muted)",textTransform:"uppercase",fontWeight:500}}>{monthStr}</span>}
                       </div>
-                      {allItems.length>0&&<div style={{display:"flex",justifyContent:"center",gap:"1px",marginTop:"1px",flexWrap:"wrap"}}>
-                        {allItems.slice(0,3).map(it=><span key={it.id} style={{fontSize:".45rem"}}>{(ITEM_TYPES[it.type]||ITEM_TYPES.activity).icon}</span>)}
-                        {allItems.length>3&&<span style={{fontSize:".4rem",color:"var(--muted)"}}>+{allItems.length-3}</span>}
-                      </div>}
+                      {entries.map(e=><div key={e.dest.id}
+                        onClick={(ev)=>itemClick(ev,e.dest.id,e.localDay)}
+                        style={{display:"flex",alignItems:"center",gap:"3px",padding:".15rem .25rem",borderRadius:"4px",cursor:"pointer",background:e.dest.color+"12",transition:"background .1s"}}
+                        onMouseEnter={ev=>ev.currentTarget.style.background=e.dest.color+"25"}
+                        onMouseLeave={ev=>ev.currentTarget.style.background=e.dest.color+"12"}>
+                        <span style={{fontSize:".65rem",flexShrink:0}}>{e.dest.emoji}</span>
+                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".6rem",fontWeight:600,color:e.dest.color,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.dest.name}</span>
+                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".52rem",color:e.dest.color+"90",marginLeft:"auto",flexShrink:0}}>d{e.localDay}</span>
+                      </div>)}
+                      {hotels.map(h=><div key={h.id}
+                        onClick={(ev)=>{ev.stopPropagation();const dest=entries.find(e=>e.items.includes(h));if(dest){openEditItem(dest.dest.id,h);}}}
+                        style={{display:"flex",alignItems:"center",gap:"3px",padding:".12rem .25rem",borderRadius:"4px",cursor:"pointer",background:"#7EC87E10",transition:"background .1s"}}
+                        onMouseEnter={ev=>ev.currentTarget.style.background="#7EC87E22"}
+                        onMouseLeave={ev=>ev.currentTarget.style.background="#7EC87E10"}>
+                        <span style={{fontSize:".6rem"}}>🏨</span>
+                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".56rem",color:"#7EC87E",fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{h.title||"Hospedaje"}</span>
+                      </div>)}
+                      {activities.map(a=><div key={a.id}
+                        onClick={(ev)=>{ev.stopPropagation();const dest=entries.find(e=>e.items.includes(a));if(dest){openEditItem(dest.dest.id,a);}}}
+                        style={{display:"flex",alignItems:"center",gap:"3px",padding:".12rem .25rem",borderRadius:"4px",cursor:"pointer",background:"#5AB4E810",transition:"background .1s"}}
+                        onMouseEnter={ev=>ev.currentTarget.style.background="#5AB4E822"}
+                        onMouseLeave={ev=>ev.currentTarget.style.background="#5AB4E810"}>
+                        <span style={{fontSize:".6rem"}}>🎯</span>
+                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".56rem",color:"#5AB4E8",fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{a.title||"Actividad"}</span>
+                      </div>)}
+                      {foods.map(f=><div key={f.id}
+                        onClick={(ev)=>{ev.stopPropagation();const dest=entries.find(e=>e.items.includes(f));if(dest){openEditItem(dest.dest.id,f);}}}
+                        style={{display:"flex",alignItems:"center",gap:"3px",padding:".12rem .25rem",borderRadius:"4px",cursor:"pointer",background:"#E8845A10",transition:"background .1s"}}
+                        onMouseEnter={ev=>ev.currentTarget.style.background="#E8845A22"}
+                        onMouseLeave={ev=>ev.currentTarget.style.background="#E8845A10"}>
+                        <span style={{fontSize:".6rem"}}>🍽️</span>
+                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".56rem",color:"#E8845A",fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.title||"Comida"}</span>
+                      </div>)}
+                      {notes.map(n=><div key={n.id}
+                        onClick={(ev)=>{ev.stopPropagation();const dest=entries.find(e=>e.items.includes(n));if(dest){openEditItem(dest.dest.id,n);}}}
+                        style={{display:"flex",alignItems:"center",gap:"3px",padding:".12rem .25rem",borderRadius:"4px",cursor:"pointer",background:"#B87EE810"}}
+                        onMouseEnter={ev=>ev.currentTarget.style.background="#B87EE822"}
+                        onMouseLeave={ev=>ev.currentTarget.style.background="#B87EE810"}>
+                        <span style={{fontSize:".6rem"}}>📝</span>
+                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".56rem",color:"#B87EE8",fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{n.title||"Nota"}</span>
+                      </div>)}
+                      {dayTransits.map(tr=>{
+                        const tt=ttInfo(tr.transitType);
+                        return <div key={tr.id}
+                          onClick={(ev)=>{ev.stopPropagation();openEditTransit(tr);}}
+                          style={{display:"flex",alignItems:"center",gap:"3px",padding:".12rem .25rem",borderRadius:"4px",cursor:"pointer",background:tt.color+"10",transition:"background .1s"}}
+                          onMouseEnter={ev=>ev.currentTarget.style.background=tt.color+"22"}
+                          onMouseLeave={ev=>ev.currentTarget.style.background=tt.color+"10"}>
+                          <span style={{fontSize:".6rem"}}>{tt.icon}</span>
+                          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".56rem",color:tt.color,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{tr.title||tt.label}</span>
+                        </div>;
+                      })}
                     </div>;
                   })}
                 </div>
               </div>;
             })()}
 
-            {trip.destinations.length===0
-              ?<div style={{textAlign:"center",padding:"3rem",color:"var(--muted)",fontFamily:"'DM Sans',sans-serif"}}><div style={{fontSize:"2.5rem",marginBottom:".75rem"}}>🏝️</div><p>Añade destinos para ver el itinerario.</p></div>
-              :buildItinerary().map(({abs,date:rowDate,dest,localDay,items,transits:dayTransits})=>{
-                const realDate=rowDate&&!rowDate.startsWith("_")?rowDate:dayToDate(dest,localDay);
-                const isLastDay=localDay===dest.days;
-                const nextDest=trip.destinations[trip.destinations.indexOf(dest)+1];
-                const outboundTransits=(trip.transits||[]).filter(tr=>tr.fromDestId===dest.id&&(isLastDay||tr.date===realDate));
-                return <div key={abs} style={{display:"flex",gap:"1.25rem",position:"relative"}}>
-                  <div style={{display:"flex",flexDirection:"column",alignItems:"center",flexShrink:0,width:"42px"}}>
-                    <div style={{width:"34px",height:"34px",borderRadius:"50%",background:dest.color,display:"flex",alignItems:"center",justifyContent:"center",fontSize:".7rem",fontFamily:"'DM Sans',sans-serif",fontWeight:700,color:"#fff",flexShrink:0,zIndex:1}}>{abs}</div>
-                    <div style={{width:"2px",flex:1,background:dest.color+"30",minHeight:"16px"}}/>
+            {trip.destinations.length===0&&<div style={{textAlign:"center",padding:"3rem",color:"var(--muted)",fontFamily:"'DM Sans',sans-serif"}}><div style={{fontSize:"2.5rem",marginBottom:".75rem"}}>🏝️</div><p>Añade destinos para ver el itinerario.</p></div>}
+
+            {(()=>{
+              const allItems=trip.destinations.flatMap(d=>d.items.map(i=>({...i,_destId:d.id,_destName:d.name,_destEmoji:d.emoji,_destColor:d.color})));
+              const allTransits=(trip.transits||[]).filter(tr=>tr.cost>0);
+              const registered=itemsCost+transitsCost;
+              const paidItemsCOP=allItems.filter(i=>i.paid&&i.cost>0).reduce((s,i)=>s+_toCOP(i.cost,i.costCurrency),0);
+              const paidTransitsCOP=allTransits.filter(t=>t.paid).reduce((s,t)=>s+_toCOP(t.cost,t.costCurrency),0);
+              const totalPaid=paidItemsCOP+paidTransitsCOP;
+              const pending=registered-totalPaid;
+              if(!registered&&!estimatesCost) return null;
+
+              // Group items by type for "rubro" view
+              const byType={};
+              allItems.filter(i=>i.cost>0).forEach(i=>{
+                if(!byType[i.type])byType[i.type]=[];
+                byType[i.type].push(i);
+              });
+
+              const rowStyle={display:"flex",alignItems:"center",gap:".5rem",padding:".4rem .6rem",borderRadius:"6px",fontFamily:"'DM Sans',sans-serif",fontSize:".76rem",transition:"background .1s"};
+              const paidBtn=(paid,onClick)=><button onClick={onClick} style={{background:paid?"#7EC87E":"rgba(28,28,30,.06)",border:`1px solid ${paid?"#7EC87E":"rgba(28,28,30,.15)"}`,color:paid?"#fff":"var(--muted)",padding:".2rem .4rem",borderRadius:"4px",cursor:"pointer",fontSize:".65rem",flexShrink:0,minWidth:"22px",textAlign:"center"}}>{paid?"✓":"$"}</button>;
+
+              return <div style={{marginTop:"1.5rem",padding:"1.25rem 1.5rem",background:"#fff",border:"1px solid var(--line)",borderRadius:"10px"}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1rem"}}>
+                  <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".08em"}}>Desglose de gastos</div>
+                  <div style={{display:"flex",gap:".2rem",background:"rgba(28,28,30,.06)",borderRadius:"5px",padding:".15rem"}}>
+                    {[["general","General"],["detail","Detalle"]].map(([k,l])=>(
+                      <button key={k} onClick={()=>setBudgetView(k)} style={{background:budgetView===k?"#fff":"transparent",border:"none",color:budgetView===k?"var(--ink)":"var(--muted)",padding:".2rem .6rem",borderRadius:"4px",cursor:"pointer",fontSize:".68rem",fontWeight:budgetView===k?500:400,boxShadow:budgetView===k?"0 1px 3px rgba(0,0,0,.08)":"none"}}>{l}</button>
+                    ))}
                   </div>
-                  <div style={{flex:1,paddingBottom:"1rem"}}>
-                    <div style={{display:"flex",alignItems:"center",gap:".55rem",paddingTop:".45rem",marginBottom:".45rem",flexWrap:"wrap"}}>
-                      <span style={{fontSize:".95rem"}}>{dest.emoji}</span>
-                      <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".86rem",fontWeight:600,color:dest.color}}>{dest.name}</span>
-                      <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".7rem",color:"var(--muted)"}}>Día {localDay}/{dest.days}</span>
-                      {realDate&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",color:"var(--muted)",marginLeft:"auto",background:"rgba(28,28,30,.05)",padding:".15rem .55rem",borderRadius:"10px",whiteSpace:"nowrap"}}>{fmtDate(realDate)}</span>}
-                    </div>
-                    {items.length===0
-                      ?<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".76rem",color:"var(--muted)",fontStyle:"italic",padding:".4rem .75rem",background:"rgba(28,28,30,.03)",borderRadius:"6px",border:"1px dashed rgba(28,28,30,.1)"}}>Sin actividades · <button onClick={()=>{setActiveDestId(dest.id);setTripView("dest");setDayFilter(localDay);setForm({type:"activity",day:localDay});setModal("newItem");}} style={{background:"none",border:"none",color:"var(--accent)",cursor:"pointer",fontSize:"inherit",fontFamily:"inherit",padding:0}}>Añadir</button></div>
-                      :<div style={{display:"flex",flexDirection:"column",gap:".3rem"}}>
-                        {items.map(item=>{
-                          const T=ITEM_TYPES[item.type]||ITEM_TYPES.activity;
-                          return <div key={item.id} style={{display:"flex",alignItems:"flex-start",gap:".7rem",background:"#fff",border:`1px solid var(--line)`,borderLeft:`3px solid ${T.color}`,borderRadius:"7px",padding:".5rem .8rem",opacity:item.confirmed?.72:1}}>
-                            <span style={{fontSize:".9rem",flexShrink:0,marginTop:".05rem"}}>{T.icon}</span>
-                            <div style={{flex:1,minWidth:0}}>
-                              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".83rem",fontWeight:500,textDecoration:item.confirmed?"line-through":"none",color:item.confirmed?"var(--muted)":"var(--ink)"}}>{item.title||"(sin título)"}</div>
-                              <div style={{display:"flex",gap:".6rem",marginTop:".1rem",flexWrap:"wrap"}}>
-                                {item.time&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",color:"var(--muted)"}}>🕐 {item.time}</span>}
-                                {item.duration&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",color:"var(--muted)"}}>⏱ {item.duration}</span>}
-                                {item.cost>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",color:"var(--accent)"}}>💶 {fmtI(item.cost,item.costCurrency)}</span>}
-                              </div>
-                            </div>
-                            <button onClick={()=>openEditItem(dest.id,item)} className="hov-icon" style={{background:"none",border:"1px solid var(--line)",color:"var(--muted)",padding:".2rem .35rem",borderRadius:"4px",cursor:"pointer",fontSize:".65rem",flexShrink:0}}>✏️</button>
-                          </div>;
-                        })}
+                </div>
+
+                {/* Paid summary bar */}
+                {(registered>0||estimatesCost>0)&&<div style={{marginBottom:"1rem",padding:".6rem .8rem",background:"rgba(28,28,30,.02)",borderRadius:"8px",border:"1px solid rgba(28,28,30,.06)"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontFamily:"'DM Sans',sans-serif",fontSize:".73rem",marginBottom:".35rem",flexWrap:"wrap",gap:".3rem"}}>
+                    <span style={{color:"#7EC87E",fontWeight:500}}>✓ Pagado: {fmt(totalPaid)}</span>
+                    {pending>0&&<span style={{color:"var(--accent)",fontWeight:500}}>Por pagar: {fmt(pending)}</span>}
+                    {estimatesCost>0&&<span style={{color:"var(--muted)",fontWeight:500}}>Estimados: {fmt(estimatesCost)}</span>}
+                  </div>
+                  <div style={{height:"6px",background:"rgba(28,28,30,.06)",borderRadius:"3px",overflow:"hidden",display:"flex"}}>
+                    {totalPaid>0&&<div style={{height:"100%",width:`${totalCost>0?(totalPaid/totalCost)*100:0}%`,background:"#7EC87E",transition:"width .3s"}}/>}
+                    {pending>0&&<div style={{height:"100%",width:`${totalCost>0?(pending/totalCost)*100:0}%`,background:"rgba(196,98,45,.35)",transition:"width .3s"}}/>}
+                    {estimatesCost>0&&<div style={{height:"100%",width:`${totalCost>0?(estimatesCost/totalCost)*100:0}%`,background:"rgba(138,133,128,.2)",transition:"width .3s"}}/>}
+                  </div>
+                </div>}
+
+                {budgetView==="general"&&<>
+                  {trip.destinations.map(d=>{const c=sumCOP(d.items);const est=calcEstimates(d);const total=c+est.total;if(!total)return null;const p=totalCost>0?(total/totalCost)*100:0;const dPaid=d.items.filter(i=>i.paid).reduce((s,i)=>s+_toCOP(i.cost,i.costCurrency),0);return <div key={d.id} style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".55rem"}}>
+                    <span style={{fontSize:".85rem"}}>{d.emoji}</span>
+                    <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".78rem",flex:"0 0 95px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{d.name}</span>
+                    <div style={{flex:1,height:"5px",background:"rgba(28,28,30,.06)",borderRadius:"3px",overflow:"hidden"}}><div style={{height:"100%",width:`${p}%`,background:d.color,borderRadius:"3px"}}/></div>
+                    <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:d.color,flex:"0 0 65px",textAlign:"right"}}>{fmt(total)}</span>
+                    {dPaid>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".6rem",color:"#7EC87E",flexShrink:0}}>✓{fmt(dPaid)}</span>}
+                  </div>;})}
+                  {allTransits.map(tr=>{const tt=ttInfo(tr.transitType);const trCOP=_toCOP(tr.cost,tr.costCurrency);const p=totalCost>0?(trCOP/totalCost)*100:0;return <div key={tr.id} style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".55rem"}}>
+                    <span style={{fontSize:".85rem"}}>{tt.icon}</span>
+                    <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".78rem",flex:"0 0 95px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:tt.color}}>{tr.title||tt.label}</span>
+                    <div style={{flex:1,height:"5px",background:"rgba(28,28,30,.06)",borderRadius:"3px",overflow:"hidden"}}><div style={{height:"100%",width:`${p}%`,background:tt.color,borderRadius:"3px"}}/></div>
+                    <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:tt.color,flex:"0 0 65px",textAlign:"right"}}>{fmtI(tr.cost,tr.costCurrency)}</span>
+                    {tr.paid&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".6rem",color:"#7EC87E",flexShrink:0}}>✓</span>}
+                  </div>;})}
+                </>}
+
+                {budgetView==="detail"&&<>
+                  {/* By destination with item details */}
+                  {trip.destinations.map(d=>{
+                    const destItems=d.items.filter(i=>i.cost>0);
+                    if(!destItems.length)return null;
+                    return <div key={d.id} style={{marginBottom:"1rem"}}>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",fontWeight:600,color:d.color,marginBottom:".4rem",display:"flex",alignItems:"center",gap:".4rem"}}>
+                        <span>{d.emoji}</span> {d.name}
+                        <span style={{marginLeft:"auto",fontSize:".7rem",color:"var(--accent)"}}>{fmt(sumCOP(destItems))}</span>
                       </div>
-                    }
-                    {isLastDay&&outboundTransits.length>0&&<div style={{marginTop:".5rem",display:"flex",flexDirection:"column",gap:".3rem"}}>
-                      {outboundTransits.map(tr=>{
-                        const tt=ttInfo(tr.transitType);
-                        const to=destName(tr.toDestId);
-                        return <div key={tr.id} style={{display:"flex",alignItems:"center",gap:".6rem",padding:".45rem .8rem",background:tt.color+"10",border:`1px solid ${tt.color}30`,borderRadius:"7px",cursor:"pointer"}} onClick={()=>openEditTransit(tr)}>
-                          <span style={{fontSize:"1rem"}}>{tt.icon}</span>
-                          <div style={{flex:1,fontFamily:"'DM Sans',sans-serif",fontSize:".78rem",fontWeight:500,color:tt.color}}>{tr.title||tt.label}</div>
-                          {to&&<div style={{display:"flex",alignItems:"center",gap:".3rem",fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--muted)"}}>→ <span style={{color:to.color,fontWeight:500}}>{to.emoji} {to.name}</span></div>}
-                          {tr.departTime&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",color:"var(--muted)"}}>🕐{tr.departTime}</span>}
-                          {tr.cost>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",color:"var(--accent)"}}>💶{fmtI(tr.cost,tr.costCurrency)}</span>}
+                      {destItems.map(i=>{
+                        const T=ITEM_TYPES[i.type]||ITEM_TYPES.activity;
+                        return <div key={i.id} style={{...rowStyle,background:i.paid?"#7EC87E08":"transparent",borderLeft:`3px solid ${T.color}`}}>
+                          {paidBtn(i.paid,()=>togglePaidItem(d.id,i.id))}
+                          <span style={{fontSize:".8rem"}}>{T.icon}</span>
+                          <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textDecoration:i.paid?"line-through":"none",color:i.paid?"var(--muted)":"var(--ink)"}}>{i.title||T.label}</span>
+                          {i.dayEnd&&i.dayEnd>i.day&&<span style={{fontSize:".6rem",color:T.color,flexShrink:0}}>{i.type==="hotel"?`${i.dayEnd-i.day}n`:`${i.dayEnd-i.day+1}d`}</span>}
+                          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:i.paid?"#7EC87E":"var(--accent)",fontWeight:500,flexShrink:0}}>{fmtI(i.cost,i.costCurrency)}</span>
                         </div>;
                       })}
+                    </div>;
+                  })}
+                  {/* Transits */}
+                  {allTransits.length>0&&<div style={{marginBottom:"1rem"}}>
+                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",fontWeight:600,color:"var(--muted)",marginBottom:".4rem"}}>🚀 Trayectos
+                      <span style={{marginLeft:"auto",float:"right",fontSize:".7rem",color:"var(--accent)"}}>{fmt(transitsCost)}</span>
+                    </div>
+                    {allTransits.map(tr=>{
+                      const tt=ttInfo(tr.transitType);
+                      const from=destName(tr.fromDestId);const to=destName(tr.toDestId);
+                      return <div key={tr.id} style={{...rowStyle,background:tr.paid?"#7EC87E08":"transparent",borderLeft:`3px solid ${tt.color}`}}>
+                        {paidBtn(tr.paid,()=>togglePaidTransit(tr.id))}
+                        <span style={{fontSize:".8rem"}}>{tt.icon}</span>
+                        <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textDecoration:tr.paid?"line-through":"none",color:tr.paid?"var(--muted)":"var(--ink)"}}>{tr.title||tt.label} {from&&to?`(${from.name}→${to.name})`:""}</span>
+                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:tr.paid?"#7EC87E":"var(--accent)",fontWeight:500,flexShrink:0}}>{fmtI(tr.cost,tr.costCurrency)}</span>
+                      </div>;
+                    })}
+                  </div>}
+                  {/* By type summary */}
+                  {Object.keys(byType).length>0&&<div style={{padding:".6rem .75rem",background:"rgba(28,28,30,.02)",borderRadius:"8px",border:"1px solid rgba(28,28,30,.06)",marginBottom:".5rem"}}>
+                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".65rem",fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".05em",marginBottom:".4rem"}}>Por rubro</div>
+                    {Object.entries(byType).map(([type,items])=>{
+                      const T=ITEM_TYPES[type]||ITEM_TYPES.activity;
+                      const total=items.reduce((s,i)=>s+_toCOP(i.cost,i.costCurrency),0);
+                      const paid=items.filter(i=>i.paid).reduce((s,i)=>s+_toCOP(i.cost,i.costCurrency),0);
+                      return <div key={type} style={{display:"flex",alignItems:"center",gap:".5rem",fontFamily:"'DM Sans',sans-serif",fontSize:".74rem",marginBottom:".3rem"}}>
+                        <span>{T.icon}</span><span style={{color:T.color,fontWeight:500,flex:"0 0 80px"}}>{T.label}</span>
+                        <span style={{color:"var(--muted)"}}>{items.length} items</span>
+                        <span style={{marginLeft:"auto",color:"var(--accent)",fontWeight:500}}>{fmt(total)}</span>
+                        {paid>0&&<span style={{fontSize:".62rem",color:"#7EC87E"}}>✓{fmt(paid)}</span>}
+                      </div>;
+                    })}
+                    {allTransits.length>0&&<div style={{display:"flex",alignItems:"center",gap:".5rem",fontFamily:"'DM Sans',sans-serif",fontSize:".74rem"}}>
+                      <span>🚀</span><span style={{color:"var(--muted)",fontWeight:500,flex:"0 0 80px"}}>Trayectos</span>
+                      <span style={{color:"var(--muted)"}}>{allTransits.length} items</span>
+                      <span style={{marginLeft:"auto",color:"var(--accent)",fontWeight:500}}>{fmt(transitsCost)}</span>
+                      {paidTransitsCOP>0&&<span style={{fontSize:".62rem",color:"#7EC87E"}}>✓{fmt(paidTransitsCOP)}</span>}
                     </div>}
-                    {items.some(i=>i.cost>0)&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".7rem",color:"var(--accent)",textAlign:"right",marginTop:".3rem"}}>Día: {fmt(sumCOP(items))}</div>}
-                  </div>
-                </div>;
-              })
-            }
+                  </div>}
+                </>}
 
-            {totalCost>0&&<div style={{marginTop:"1.5rem",padding:"1.25rem 1.5rem",background:"#fff",border:"1px solid var(--line)",borderRadius:"10px"}}>
-              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".08em",marginBottom:"1rem"}}>Desglose de gastos</div>
-              {trip.destinations.map(d=>{const c=sumCOP(d.items);if(!c)return null;const p=totalCost>0?(c/totalCost)*100:0;return <div key={d.id} style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".55rem"}}>
-                <span style={{fontSize:".85rem"}}>{d.emoji}</span>
-                <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".78rem",flex:"0 0 95px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{d.name}</span>
-                <div style={{flex:1,height:"5px",background:"rgba(28,28,30,.06)",borderRadius:"3px",overflow:"hidden"}}><div style={{height:"100%",width:`${p}%`,background:d.color,borderRadius:"3px"}}/></div>
-                <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:d.color,flex:"0 0 65px",textAlign:"right"}}>{fmt(c)}</span>
-              </div>;})}
-              {(trip.transits||[]).filter(tr=>tr.cost>0).map(tr=>{const tt=ttInfo(tr.transitType);const trCOP=_toCOP(tr.cost,tr.costCurrency);const p=totalCost>0?(trCOP/totalCost)*100:0;return <div key={tr.id} style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".55rem"}}>
-                <span style={{fontSize:".85rem"}}>{tt.icon}</span>
-                <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".78rem",flex:"0 0 95px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:tt.color}}>{tr.title||tt.label}</span>
-                <div style={{flex:1,height:"5px",background:"rgba(28,28,30,.06)",borderRadius:"3px",overflow:"hidden"}}><div style={{height:"100%",width:`${p}%`,background:tt.color,borderRadius:"3px"}}/></div>
-                <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:tt.color,flex:"0 0 65px",textAlign:"right"}}>{fmtI(tr.cost,tr.costCurrency)}</span>
-              </div>;})}
-              <div style={{borderTop:"1px solid var(--line)",paddingTop:".75rem",display:"flex",justifyContent:"space-between",fontFamily:"'DM Sans',sans-serif",fontSize:".82rem"}}>
-                <span style={{color:"var(--muted)"}}>Total estimado</span><span style={{color:"var(--accent)",fontWeight:600}}>{fmt(totalCost)}</span>
-              </div>
-              {trip.budget>0&&<div style={{marginTop:".5rem"}}>
-                <div style={{display:"flex",justifyContent:"space-between",fontFamily:"'DM Sans',sans-serif",fontSize:".73rem",color:"var(--muted)",marginBottom:".3rem"}}>
-                  <span>Presupuesto: {fmt(trip.budget)}</span>
-                  <span style={{color:totalCost>trip.budget?"#E85A5A":"#7EC87E"}}>{totalCost>trip.budget?`Excede ${fmt(totalCost-trip.budget)}`:`Disponible ${fmt(trip.budget-totalCost)}`}</span>
+                {/* Totals */}
+                {estimatesCost>0&&<div style={{display:"flex",justifyContent:"space-between",fontFamily:"'DM Sans',sans-serif",fontSize:".73rem",color:"var(--muted)",marginBottom:".5rem",paddingBottom:".5rem",borderBottom:"1px dashed rgba(28,28,30,.08)"}}>
+                  <span>Registrado: {fmt(registered)}</span>
+                  <span style={{color:"#8A8580"}}>+ Estimados: {fmt(estimatesCost)}</span>
+                </div>}
+                <div style={{borderTop:"1px solid var(--line)",paddingTop:".75rem",fontFamily:"'DM Sans',sans-serif"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:".82rem",marginBottom:".4rem"}}>
+                    <span style={{color:"var(--muted)"}}>Total</span><span style={{color:"var(--accent)",fontWeight:600}}>{fmt(totalCost)}</span>
+                  </div>
+                  {registered>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:".73rem"}}>
+                    <span style={{color:"#7EC87E"}}>✓ Pagado</span><span style={{color:"#7EC87E",fontWeight:500}}>{fmt(totalPaid)}</span>
+                  </div>}
+                  {pending>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:".73rem"}}>
+                    <span style={{color:"var(--accent)"}}>Por pagar (registrado)</span><span style={{color:"var(--accent)",fontWeight:500}}>{fmt(pending)}</span>
+                  </div>}
+                  {estimatesCost>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:".73rem"}}>
+                    <span style={{color:"var(--muted)"}}>+ Estimados pendientes</span><span style={{color:"var(--muted)"}}>{fmt(estimatesCost)}</span>
+                  </div>}
                 </div>
-                <div style={{height:"5px",background:"rgba(28,28,30,.06)",borderRadius:"3px",overflow:"hidden"}}><div style={{height:"100%",width:`${Math.min(100,(totalCost/trip.budget)*100)}%`,background:totalCost>trip.budget?"#E85A5A":"var(--accent)",borderRadius:"3px"}}/></div>
-              </div>}
-            </div>}
+                {trip.budget>0&&<div style={{marginTop:".5rem"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontFamily:"'DM Sans',sans-serif",fontSize:".73rem",color:"var(--muted)",marginBottom:".3rem"}}>
+                    <span>Presupuesto: {fmt(trip.budget)}</span>
+                    <span style={{color:totalCost>trip.budget?"#E85A5A":"#7EC87E"}}>{totalCost>trip.budget?`Excede ${fmt(totalCost-trip.budget)}`:`Disponible ${fmt(trip.budget-totalCost)}`}</span>
+                  </div>
+                  <div style={{height:"5px",background:"rgba(28,28,30,.06)",borderRadius:"3px",overflow:"hidden"}}><div style={{height:"100%",width:`${Math.min(100,(totalCost/trip.budget)*100)}%`,background:totalCost>trip.budget?"#E85A5A":"var(--accent)",borderRadius:"3px"}}/></div>
+                </div>}
+              </div>;
+            })()}
           </div>}
 
           {/* ── DEST VIEW ───────────────────────────────────────────────────── */}
@@ -786,8 +1157,8 @@ export default function TravelPlanner({ user, onSignOut }) {
                   </div>
                 </div>
                 :<div>
-                  {(dayFilter?[dayFilter]:[...new Set(filteredItems.map(i=>i.day))].sort((a,b)=>a-b)).map(day=>{
-                    const dayItems=filteredItems.filter(i=>i.day===day);
+                  {(dayFilter?[dayFilter]:[...new Set(filteredItems.flatMap(i=>i.dayEnd?Array.from({length:i.dayEnd-i.day+1},(_,k)=>i.day+k):[i.day]))].sort((a,b)=>a-b)).map(day=>{
+                    const dayItems=filteredItems.filter(i=>(i.day===day && !i.dayEnd) || (i.dayEnd && i.day<=day && i.dayEnd>=day));
                     if(!dayItems.length)return null;
                     const rd=dayToDate(activeDest,day);
                     return <div key={day} style={{marginBottom:"1.5rem"}}>
@@ -802,19 +1173,39 @@ export default function TravelPlanner({ user, onSignOut }) {
                       <div style={{display:"flex",flexDirection:"column",gap:".4rem"}}>
                         {dayItems.map(item=>{
                           const T=ITEM_TYPES[item.type]||ITEM_TYPES.activity;
-                          return <div key={item.id} className="hov-row" style={{background:"#fff",border:"1px solid var(--line)",borderRadius:"8px",padding:".75rem 1rem",display:"flex",alignItems:"center",gap:".75rem",transition:"background .15s",opacity:item.confirmed?.7:1}}>
+                          const isSpan = item.dayEnd && item.dayEnd > item.day;
+                          const isHotel = item.type==="hotel";
+                          const spanDays = isSpan ? item.dayEnd - item.day + (isHotel?0:1) : 0;
+                          const spanLabel = isHotel ? `${item.dayEnd-item.day} noche${item.dayEnd-item.day!==1?"s":""}` : `${spanDays} día${spanDays!==1?"s":""}`;
+                          const unitLabel = isHotel?"noche":"día";
+                          const isCont = isSpan && item.day < day;
+                          if (isCont && isHotel && day >= item.dayEnd) return null;
+                          if (isCont) {
+                            const totalSpan = isHotel ? item.dayEnd-item.day : item.dayEnd-item.day+1;
+                            const current = day-item.day+(isHotel?1:1);
+                            const perUnit = item.cost>0?_toCOP(item.cost,item.costCurrency)/totalSpan:0;
+                            return <div key={item.id+"-"+day} style={{display:"flex",alignItems:"center",gap:".6rem",padding:".45rem .8rem",background:T.color+"10",border:`1px solid ${T.color}30`,borderLeft:`3px solid ${T.color}`,borderRadius:"7px",opacity:item.confirmed?.65:1}}>
+                              <span style={{fontSize:".9rem"}}>{T.icon}</span>
+                              <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".78rem",color:T.color,fontWeight:500}}>{item.title||T.label}</span>
+                              {perUnit>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".65rem",color:"var(--accent)"}}>{fmt(perUnit)}/{unitLabel}</span>}
+                              <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".65rem",color:"var(--muted)",marginLeft:"auto"}}>{unitLabel} {current}/{totalSpan}</span>
+                            </div>;
+                          }
+                          return <div key={item.id} className="hov-row" style={{background:isSpan?T.color+"08":"#fff",border:`1px solid ${isSpan?T.color+"30":"var(--line)"}`,borderLeft:`3px solid ${T.color}`,borderRadius:"8px",padding:".75rem 1rem",display:"flex",alignItems:"center",gap:".75rem",transition:"background .15s",opacity:item.confirmed?.7:1}}>
                             <span style={{fontSize:"1.2rem",flexShrink:0}}>{T.icon}</span>
                             <div style={{flex:1,minWidth:0}}>
                               <div style={{display:"flex",alignItems:"center",gap:".5rem",flexWrap:"wrap"}}>
                                 <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".87rem",fontWeight:500,textDecoration:item.confirmed?"line-through":"none",color:item.confirmed?"var(--muted)":"var(--ink)"}}>{item.title||"(sin título)"}</span>
                                 <span style={{fontSize:".64rem",padding:".1rem .45rem",background:T.color+"18",color:T.color,borderRadius:"3px",fontFamily:"'DM Sans',sans-serif",fontWeight:500}}>{T.label}</span>
+                                {isSpan&&<span style={{fontSize:".64rem",padding:".1rem .45rem",background:T.color+"18",color:T.color,borderRadius:"3px",fontFamily:"'DM Sans',sans-serif",fontWeight:500}}>{spanLabel}</span>}
                                 {item.confirmed&&<span style={{fontSize:".64rem",color:"#7EC87E",fontFamily:"'DM Sans',sans-serif"}}>✓ Confirmado</span>}
                               </div>
                               <div style={{display:"flex",gap:".75rem",marginTop:".2rem",flexWrap:"wrap"}}>
+                                {isSpan&&activeDest?.startDate&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".71rem",color:T.color}}>📅 {fmtShort(dayToDate(activeDest,item.day))} → {fmtShort(dayToDate(activeDest,item.dayEnd))}</span>}
                                 {item.time&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".71rem",color:"var(--muted)"}}>🕐 {item.time}</span>}
                                 {item.duration&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".71rem",color:"var(--muted)"}}>⏱ {item.duration}</span>}
                                 {item.address&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".71rem",color:"var(--muted)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"180px"}}>📍 {item.address}</span>}
-                                {item.cost>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".71rem",color:"var(--accent)"}}>💶 {fmtI(item.cost,item.costCurrency)}</span>}
+                                {item.cost>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".71rem",color:"var(--accent)"}}>💶 {fmtI(item.cost,item.costCurrency)}{isSpan?` total · ${fmt(_toCOP(item.cost,item.costCurrency)/(isHotel?item.dayEnd-item.day:spanDays))}/${unitLabel}`:""}</span>}
                               </div>
                               {item.notes&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".71rem",color:"var(--muted)",marginTop:".2rem",fontStyle:"italic"}}>{item.notes}</div>}
                             </div>
@@ -838,6 +1229,19 @@ export default function TravelPlanner({ user, onSignOut }) {
                 <div style={{flex:1}}/>
                 {activeDest.items.some(i=>i.cost>0)&&<div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".78rem",color:"var(--accent)",fontWeight:500}}>Total: {fmt(sumCOP(activeDest.items))}</div>}
               </div>
+
+              {/* ── Estimates read-only for this dest ── */}
+              {hasEstimates&&(()=>{
+                const est = calcEstimates(activeDest);
+                if(!est.total) return null;
+                return <div style={{marginTop:"1rem",padding:".6rem 1.25rem",background:"rgba(28,28,30,.02)",border:"1px solid rgba(28,28,30,.06)",borderRadius:"8px",fontFamily:"'DM Sans',sans-serif",fontSize:".73rem",display:"flex",alignItems:"center",gap:".75rem",flexWrap:"wrap"}}>
+                  <span style={{fontSize:".62rem",color:"var(--muted)",textTransform:"uppercase",letterSpacing:".06em",fontWeight:600}}>Estimados</span>
+                  {est.estHotelTotal>0&&<span style={{color:"#7EC87E"}}>🏨 {est.uncoveredNights}n {fmt(est.estHotelTotal)}</span>}
+                  {est.estFoodRemaining>0&&<span style={{color:"#E8845A"}}>🍽️ {fmt(est.estFoodRemaining)}</span>}
+                  {est.estActivityRemaining>0&&<span style={{color:"#5AB4E8"}}>🎯 {fmt(est.estActivityRemaining)}</span>}
+                  <span style={{marginLeft:"auto",color:"var(--accent)",fontWeight:500}}>{fmt(est.total)}</span>
+                </div>;
+              })()}
             </div>
           )}
         </main>
@@ -851,11 +1255,8 @@ export default function TravelPlanner({ user, onSignOut }) {
             <h3 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.5rem",fontWeight:600,margin:"0 0 1.5rem"}}>Nuevo viaje</h3>
             <Lbl>Emoji</Lbl><EmojiPick value={form.emoji||"🌍"} onChange={v=>setForm(p=>({...p,emoji:v}))}/>
             <Lbl>Nombre *</Lbl><Inp placeholder="Ej. Verano en Asia" value={form.name||""} onChange={e=>setForm(p=>({...p,name:e.target.value}))}/>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".75rem"}}>
-              <div><Lbl>Inicio</Lbl><Inp type="date" value={form.startDate||""} onChange={e=>setForm(p=>({...p,startDate:e.target.value,endDate:p.endDate&&p.endDate<e.target.value?"":p.endDate}))}/></div>
-              <div><Lbl>Fin</Lbl><Inp type="date" min={form.startDate||""} value={form.endDate||""} onChange={e=>setForm(p=>({...p,endDate:e.target.value}))}/></div>
-            </div>
-            {form.startDate&&form.endDate&&<p className="hint">📅 {diffDays(form.startDate,form.endDate)+1} días en total</p>}
+            <Lbl>Fechas del viaje</Lbl>
+            <DateRangePicker startDate={form.startDate||""} endDate={form.endDate||""} onChange={(s,e)=>setForm(p=>({...p,startDate:s,endDate:e}))} startLabel="Inicio" endLabel="Fin"/>
             <Lbl>Mostrar también en otra moneda (opcional)</Lbl>
             <div style={{display:"flex",gap:".4rem",flexWrap:"wrap",marginBottom:"1rem"}}>
               <button onClick={()=>setForm(p=>({...p,currency:"COP",copRate:0}))} style={{background:(form.currency||"COP")==="COP"?"var(--accent)":"rgba(28,28,30,.05)",border:"none",color:(form.currency||"COP")==="COP"?"#fff":"var(--muted)",padding:".4rem .8rem",borderRadius:"6px",cursor:"pointer",fontSize:".78rem",transition:"all .15s"}}>🇨🇴 Solo COP</button>
@@ -874,16 +1275,18 @@ export default function TravelPlanner({ user, onSignOut }) {
 
           {modal==="newDest"&&<>
             <h3 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.5rem",fontWeight:600,margin:"0 0 .3rem"}}>Nuevo destino</h3>
-            {(()=>{const dests=trip?.destinations||[];if(dests.length===0&&trip?.startDate)return <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:"var(--accent)",margin:"0 0 1.25rem",background:"rgba(196,98,45,.07)",padding:".5rem .75rem",borderRadius:"6px"}}>📍 Primer destino — desde <strong>{fmtDate(trip.startDate)}</strong></p>;if(dests.length>0){const last=dests[dests.length-1];const e=last.endDate||(last.startDate?addDays(last.startDate,last.days-1):null);if(e)return <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:"var(--accent)",margin:"0 0 1.25rem",background:"rgba(196,98,45,.07)",padding:".5rem .75rem",borderRadius:"6px"}}>📍 Continuando desde <strong>{last.emoji} {last.name}</strong> — llegada sugerida <strong>{fmtDate(e)}</strong></p>;}return null;})()}
-            <Lbl>Emoji</Lbl><EmojiPick value={form.emoji||"📍"} onChange={v=>setForm(p=>({...p,emoji:v}))}/>
-            <Lbl>Ciudad *</Lbl><Inp placeholder="Ej. Tokio" value={form.name||""} onChange={e=>setForm(p=>({...p,name:e.target.value}))}/>
-            <Lbl>País</Lbl><Inp placeholder="Ej. Japón" value={form.country||""} onChange={e=>setForm(p=>({...p,country:e.target.value}))}/>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:".75rem"}}>
-              <div><Lbl>Llegada</Lbl><Inp type="date" value={form.startDate||""} onChange={e=>setDestStart(e.target.value)}/></div>
-              <div><Lbl>Salida</Lbl><Inp type="date" min={form.startDate||""} value={form.endDate||""} onChange={e=>setDestEnd(e.target.value)}/></div>
-              <div><Lbl>Días</Lbl><Inp type="number" min="1" value={form.days||3} onChange={e=>setDestDays(e.target.value)}/></div>
-            </div>
-            {form.startDate&&form.endDate&&<p className="hint">📅 {fmtDate(form.startDate)} → {fmtDate(form.endDate)} · {form.days} días</p>}
+            {(()=>{const dests=trip?.destinations||[];if(dests.length===0&&trip?.startDate)return <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:"var(--accent)",margin:"0 0 1.25rem",background:"rgba(196,98,45,.07)",padding:".5rem .75rem",borderRadius:"6px"}}>📍 Primer destino — desde <strong>{fmtDate(trip.startDate)}</strong></p>;if(dests.length>0){const sorted=sortDests(dests);let latestEnd="";let latestD=null;for(const d of sorted){const e=destEnd(d);if(e&&e>latestEnd){latestEnd=e;latestD=d;}}if(latestD&&latestEnd)return <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:"var(--accent)",margin:"0 0 1.25rem",background:"rgba(196,98,45,.07)",padding:".5rem .75rem",borderRadius:"6px"}}>📍 Continuando desde <strong>{latestD.emoji} {latestD.name}</strong> — llegada sugerida <strong>{fmtDate(latestEnd)}</strong></p>;}return null;})()}
+            <Lbl>Destino *</Lbl>
+            <CitySearch
+              value={form.name||""}
+              country={form.country||""}
+              emoji={form.emoji||"📍"}
+              onSelect={(city,country,flag)=>setForm(p=>({...p,name:city,country,emoji:flag}))}
+              onChange={(v)=>setForm(p=>({...p,name:v}))}
+              onCountryChange={(v)=>setForm(p=>({...p,country:v}))}
+            />
+            <Lbl>Fechas</Lbl>
+            <DateRangePicker startDate={form.startDate||""} endDate={form.endDate||""} onChange={(s,e)=>{setDestStart(s);if(e)setDestEnd(e);}} startLabel="Llegada" endLabel="Salida"/>
             <Btns onCancel={closeModal} onOk={addDestination} label="Agregar destino"/>
           </>}
 
@@ -918,18 +1321,19 @@ export default function TravelPlanner({ user, onSignOut }) {
               </div>
             </>}
             {isRental(form.transitType)
-              ?<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".75rem"}}>
-                <div><Lbl>Fecha recogida</Lbl><Inp type="date" value={form.date||""} onChange={e=>setForm(p=>({...p,date:e.target.value}))}/></div>
-                <div><Lbl>Fecha devolución</Lbl><Inp type="date" min={form.date||""} value={form.returnDate||""} onChange={e=>setForm(p=>({...p,returnDate:e.target.value}))}/></div>
-              </div>
-              :<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".75rem"}}>
-                <div><Lbl>Fecha salida</Lbl><Inp type="date" value={form.date||""} onChange={e=>setForm(p=>({...p,date:e.target.value}))}/></div>
-                <div><Lbl>Fecha llegada</Lbl><Inp type="date" min={form.date||""} value={form.returnDate||""} onChange={e=>setForm(p=>({...p,returnDate:e.target.value}))}/></div>
-                <div><Lbl>Hora salida</Lbl><Inp type="time" value={form.departTime||""} onChange={e=>setForm(p=>({...p,departTime:e.target.value}))}/></div>
-                <div><Lbl>Hora llegada</Lbl><Inp type="time" value={form.arriveTime||""} onChange={e=>setForm(p=>({...p,arriveTime:e.target.value}))}/></div>
-              </div>
+              ?<>
+                <Lbl>Fechas de alquiler</Lbl>
+                <DateRangePicker startDate={form.date||""} endDate={form.returnDate||""} onChange={(s,e)=>setForm(p=>({...p,date:s,returnDate:e}))} startLabel="Recogida" endLabel="Devolución"/>
+              </>
+              :<>
+                <Lbl>Fechas del trayecto</Lbl>
+                <DateRangePicker startDate={form.date||""} endDate={form.returnDate||""} onChange={(s,e)=>setForm(p=>({...p,date:s,returnDate:e}))} startLabel="Salida" endLabel="Llegada"/>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".75rem"}}>
+                  <div><Lbl>Hora salida</Lbl><Inp type="time" value={form.departTime||""} onChange={e=>setForm(p=>({...p,departTime:e.target.value}))}/></div>
+                  <div><Lbl>Hora llegada</Lbl><Inp type="time" value={form.arriveTime||""} onChange={e=>setForm(p=>({...p,arriveTime:e.target.value}))}/></div>
+                </div>
+              </>
             }
-            {form.date&&form.returnDate&&<p className="hint">📅 {fmtDate(form.date)} → {fmtDate(form.returnDate)}{isRental(form.transitType)?` · ${diffDays(form.date,form.returnDate)+1} días de alquiler`:form.date!==form.returnDate?` · ${diffDays(form.date,form.returnDate)+1} días`:""}            </p>}
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".75rem"}}>
               <div><Lbl>Proveedor / Aerolínea</Lbl><Inp placeholder="Ej. Avianca" value={form.provider||""} onChange={e=>setForm(p=>({...p,provider:e.target.value}))}/></div>
               <div><Lbl>N° Confirmación / Reserva</Lbl><Inp placeholder="Ej. ABC123" value={form.confirmation||""} onChange={e=>setForm(p=>({...p,confirmation:e.target.value}))}/></div>
@@ -958,15 +1362,45 @@ export default function TravelPlanner({ user, onSignOut }) {
             </div>
             <Lbl>Título *</Lbl>
             <Inp placeholder={form.type==="hotel"?"Ej. Hotel Marriott":form.type==="food"?"Ej. Cena local":"Ej. Visita al museo"} value={form.title||""} onChange={e=>setForm(p=>({...p,title:e.target.value}))}/>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:".75rem"}}>
-              <div>
-                <Lbl>Día</Lbl>
-                <Inp type="number" min="1" max={activeDest?.days||99} value={form.day||1} onChange={e=>setForm(p=>({...p,day:+e.target.value}))}/>
-                {activeDest?.startDate&&form.day&&<p className="hint" style={{marginTop:"-.5rem"}}>{fmtDate(dayToDate(activeDest,Number(form.day)))}</p>}
-              </div>
-              <div><Lbl>Hora</Lbl><Inp type="time" value={form.time||""} onChange={e=>setForm(p=>({...p,time:e.target.value}))}/></div>
-              <div><Lbl>Duración</Lbl><Inp placeholder="2h" value={form.duration||""} onChange={e=>setForm(p=>({...p,duration:e.target.value}))}/></div>
-            </div>
+            {(()=>{
+              const isHotel = form.type==="hotel";
+              const multiLabel = isHotel ? `Todas las noches (${(activeDest?.days||2)-1})` : `Todos los días (${activeDest?.days||1})`;
+              const multiIcon = isHotel ? "🏨" : "📅";
+              return <div style={{marginBottom:"1rem"}}>
+                <div style={{display:"flex",gap:".4rem",flexWrap:"wrap",marginBottom:".75rem"}}>
+                  <button onClick={()=>setForm(p=>({...p,day:1,dayEnd:activeDest?.days||2,_allDays:true}))} style={{background:form._allDays===true?"var(--accent)":"rgba(28,28,30,.05)",border:"none",color:form._allDays===true?"#fff":"var(--muted)",padding:".4rem .8rem",borderRadius:"6px",cursor:"pointer",fontSize:".78rem",transition:"all .15s"}}>{multiIcon} {multiLabel}</button>
+                  <button onClick={()=>setForm(p=>({...p,day:p.day||1,dayEnd:undefined,_allDays:false}))} style={{background:form._allDays===false&&!form.dayEnd?"var(--accent)":"rgba(28,28,30,.05)",border:"none",color:form._allDays===false&&!form.dayEnd?"#fff":"var(--muted)",padding:".4rem .8rem",borderRadius:"6px",cursor:"pointer",fontSize:".78rem",transition:"all .15s"}}>1️⃣ Un día</button>
+                  <button onClick={()=>setForm(p=>({...p,day:p.day||1,dayEnd:Math.max((p.day||1)+1,p.dayEnd||((p.day||1)+1)),_allDays:false}))} style={{background:form._allDays===false&&form.dayEnd?"var(--accent)":"rgba(28,28,30,.05)",border:"none",color:form._allDays===false&&form.dayEnd?"#fff":"var(--muted)",padding:".4rem .8rem",borderRadius:"6px",cursor:"pointer",fontSize:".78rem",transition:"all .15s"}}>📅 Elegir días</button>
+                </div>
+                {form._allDays===false&&!form.dayEnd&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:".75rem"}}>
+                  <div>
+                    <Lbl>Día</Lbl>
+                    <Inp type="number" min="1" max={activeDest?.days||99} value={form.day||1} onChange={e=>setForm(p=>({...p,day:+e.target.value}))}/>
+                    {activeDest?.startDate&&form.day&&<p className="hint" style={{marginTop:"-.5rem"}}>{fmtDate(dayToDate(activeDest,Number(form.day)))}</p>}
+                  </div>
+                  <div><Lbl>Hora</Lbl><Inp type="time" value={form.time||""} onChange={e=>setForm(p=>({...p,time:e.target.value}))}/></div>
+                  <div><Lbl>Duración</Lbl><Inp placeholder="2h" value={form.duration||""} onChange={e=>setForm(p=>({...p,duration:e.target.value}))}/></div>
+                </div>}
+                {form._allDays===false&&form.dayEnd&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".75rem"}}>
+                  <div>
+                    <Lbl>Desde día</Lbl>
+                    <Inp type="number" min="1" max={activeDest?.days||99} value={form.day||1} onChange={e=>setForm(p=>({...p,day:+e.target.value,dayEnd:Math.max(+e.target.value+1,p.dayEnd||+e.target.value+1)}))}/>
+                    {activeDest?.startDate&&form.day&&<p className="hint" style={{marginTop:"-.5rem"}}>{fmtDate(dayToDate(activeDest,Number(form.day)))}</p>}
+                  </div>
+                  <div>
+                    <Lbl>Hasta día</Lbl>
+                    <Inp type="number" min={(form.day||1)+1} max={activeDest?.days||99} value={form.dayEnd||""} onChange={e=>setForm(p=>({...p,dayEnd:+e.target.value}))}/>
+                    {activeDest?.startDate&&form.dayEnd&&<p className="hint" style={{marginTop:"-.5rem"}}>{fmtDate(dayToDate(activeDest,Number(form.dayEnd)))}</p>}
+                  </div>
+                </div>}
+                {form.day&&form.dayEnd&&form.dayEnd>form.day&&activeDest?.startDate&&<p className="hint">
+                  {isHotel
+                    ?`🏨 ${form.dayEnd-form.day} noche${form.dayEnd-form.day!==1?"s":""}: check-in ${fmtDate(dayToDate(activeDest,form.day))} → check-out ${fmtDate(dayToDate(activeDest,form.dayEnd))}`
+                    :`📅 ${form.dayEnd-form.day+1} días: ${fmtDate(dayToDate(activeDest,form.day))} → ${fmtDate(dayToDate(activeDest,form.dayEnd))}`
+                  }
+                </p>}
+              </div>;
+            })()}
             <Lbl>Dirección / Lugar</Lbl><Inp placeholder="Ej. Av. Principal 123" value={form.address||""} onChange={e=>setForm(p=>({...p,address:e.target.value}))}/>
             <Lbl>Costo</Lbl>
             <div style={{display:"flex",gap:".5rem",alignItems:"center",marginBottom:"1rem"}}>
@@ -983,6 +1417,348 @@ export default function TravelPlanner({ user, onSignOut }) {
           </>}
         </div>
       </div>}
+    </div>
+  );
+}
+
+// ── City autocomplete ────────────────────────────────────────────────────────
+const _allCountries = Country.getAllCountries();
+const _countryMap = Object.fromEntries(_allCountries.map(c => [c.isoCode, c]));
+const normalize = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+
+// Spanish country names by ISO code
+const _countryES: Record<string,string> = {"AF":"Afganistán","AL":"Albania","DE":"Alemania","AD":"Andorra","AO":"Angola","AG":"Antigua y Barbuda","SA":"Arabia Saudí","DZ":"Argelia","AR":"Argentina","AM":"Armenia","AU":"Australia","AT":"Austria","AZ":"Azerbaiyán","BS":"Bahamas","BD":"Bangladés","BB":"Barbados","BH":"Baréin","BE":"Bélgica","BZ":"Belice","BJ":"Benín","BY":"Bielorrusia","BO":"Bolivia","BA":"Bosnia y Herzegovina","BW":"Botsuana","BR":"Brasil","BN":"Brunéi","BG":"Bulgaria","BF":"Burkina Faso","BI":"Burundi","BT":"Bután","CV":"Cabo Verde","KH":"Camboya","CM":"Camerún","CA":"Canadá","QA":"Catar","TD":"Chad","CZ":"Chequia","CL":"Chile","CN":"China","CY":"Chipre","CO":"Colombia","KM":"Comoras","CG":"Congo","KP":"Corea del Norte","KR":"Corea del Sur","CR":"Costa Rica","HR":"Croacia","CU":"Cuba","DK":"Dinamarca","EC":"Ecuador","EG":"Egipto","SV":"El Salvador","AE":"Emiratos Árabes Unidos","ER":"Eritrea","SK":"Eslovaquia","SI":"Eslovenia","ES":"España","US":"Estados Unidos","EE":"Estonia","ET":"Etiopía","PH":"Filipinas","FI":"Finlandia","FJ":"Fiyi","FR":"Francia","GA":"Gabón","GM":"Gambia","GE":"Georgia","GH":"Ghana","GR":"Grecia","GT":"Guatemala","GN":"Guinea","GY":"Guyana","HT":"Haití","HN":"Honduras","HU":"Hungría","IN":"India","ID":"Indonesia","IQ":"Irak","IR":"Irán","IE":"Irlanda","IS":"Islandia","IL":"Israel","IT":"Italia","JM":"Jamaica","JP":"Japón","JO":"Jordania","KZ":"Kazajistán","KE":"Kenia","KG":"Kirguistán","KW":"Kuwait","LA":"Laos","LS":"Lesoto","LV":"Letonia","LB":"Líbano","LR":"Liberia","LY":"Libia","LI":"Liechtenstein","LT":"Lituania","LU":"Luxemburgo","MK":"Macedonia del Norte","MG":"Madagascar","MY":"Malasia","MW":"Malaui","MV":"Maldivas","ML":"Mali","MT":"Malta","MA":"Marruecos","MU":"Mauricio","MR":"Mauritania","MX":"México","FM":"Micronesia","MD":"Moldavia","MC":"Mónaco","MN":"Mongolia","ME":"Montenegro","MZ":"Mozambique","MM":"Myanmar","NA":"Namibia","NR":"Nauru","NP":"Nepal","NI":"Nicaragua","NE":"Níger","NG":"Nigeria","NO":"Noruega","NZ":"Nueva Zelanda","NL":"Países Bajos","PK":"Pakistán","PA":"Panamá","PG":"Papúa Nueva Guinea","PY":"Paraguay","PE":"Perú","PF":"Polinesia Francesa","PL":"Polonia","PT":"Portugal","PR":"Puerto Rico","GB":"Reino Unido","CF":"República Centroafricana","CD":"República Democrática del Congo","DO":"República Dominicana","RW":"Ruanda","RO":"Rumanía","RU":"Rusia","WS":"Samoa","SM":"San Marino","SN":"Senegal","RS":"Serbia","SC":"Seychelles","SL":"Sierra Leona","SG":"Singapur","SY":"Siria","SO":"Somalia","LK":"Sri Lanka","ZA":"Sudáfrica","SD":"Sudán","SE":"Suecia","CH":"Suiza","SR":"Surinam","TH":"Tailandia","TW":"Taiwán","TZ":"Tanzania","TJ":"Tayikistán","TL":"Timor-Leste","TG":"Togo","TO":"Tonga","TT":"Trinidad y Tobago","TN":"Túnez","TM":"Turkmenistán","TR":"Turquía","TV":"Tuvalu","UA":"Ucrania","UG":"Uganda","UY":"Uruguay","UZ":"Uzbekistán","VU":"Vanuatu","VE":"Venezuela","VN":"Vietnam","YE":"Yemen","DJ":"Yibuti","ZM":"Zambia","ZW":"Zimbabue","HK":"Hong Kong"};
+
+// Spanish city names: English library name -> Spanish display name
+const _cityES: Record<string,string> = {
+  // Europe
+  "Lisbon":"Lisboa","Porto":"Oporto","London":"Londres","Edinburgh":"Edimburgo","Paris":"París","Nice":"Niza","Lyon":"Lyon","Marseille":"Marsella","Bordeaux":"Burdeos","Strasbourg":"Estrasburgo",
+  "Rome":"Roma","Milan":"Milán","Florence":"Florencia","Venice":"Venecia","Naples":"Nápoles","Turin":"Turín","Genoa":"Génova","Bologna":"Bolonia",
+  "Berlin":"Berlín","Munich":"Múnich","Hamburg":"Hamburgo","Cologne":"Colonia","Frankfurt":"Fráncfort","Nuremberg":"Núremberg","Dresden":"Dresde","Leipzig":"Leipzig",
+  "Vienna":"Viena","Salzburg":"Salzburgo","Innsbruck":"Innsbruck","Graz":"Graz",
+  "Prague":"Praga","Brno":"Brno","Warsaw":"Varsovia","Krakow":"Cracovia","Gdańsk":"Gdansk","Wrocław":"Breslavia",
+  "Brussels":"Bruselas","Bruges":"Brujas","Antwerp":"Amberes","Ghent":"Gante",
+  "Amsterdam":"Ámsterdam","Rotterdam":"Róterdam","The Hague":"La Haya","Utrecht":"Utrecht",
+  "Zurich":"Zúrich","Geneva":"Ginebra","Bern":"Berna","Lucerne":"Lucerna","Basel":"Basilea","Interlaken":"Interlaken",
+  "Athens":"Atenas","Thessaloniki":"Salónica","Heraklion":"Heraclión",
+  "Istanbul":"Estambul","Ankara":"Ankara","Antalya":"Antalya",
+  "Copenhagen":"Copenhague","Stockholm":"Estocolmo","Gothenburg":"Gotemburgo",
+  "Helsinki":"Helsinki","Rovaniemi":"Rovaniemi","Oslo":"Oslo","Bergen":"Bergen","Tromsø":"Tromsø",
+  "Reykjavik":"Reikiavik","Dublin":"Dublín","Bucharest":"Bucarest","Sofia":"Sofía","Belgrade":"Belgrado",
+  "Budapest":"Budapest","Ljubljana":"Liubliana","Bratislava":"Bratislava","Zagreb":"Zagreb",
+  "Tallinn":"Tallin","Riga":"Riga","Vilnius":"Vilna",
+  "Moscow":"Moscú","Saint Petersburg":"San Petersburgo","Kyiv":"Kiev",
+  "Seville":"Sevilla","Malaga":"Málaga","Zaragoza":"Zaragoza","Bilbao":"Bilbao",
+  // Americas
+  "New York":"Nueva York","Los Angeles":"Los Ángeles","New Orleans":"Nueva Orleans","Philadelphia":"Filadelfia","Chicago":"Chicago",
+  "Mexico City":"Ciudad de México","Havana":"La Habana","Guatemala City":"Ciudad de Guatemala","Panama City":"Ciudad de Panamá",
+  "Rio de Janeiro":"Río de Janeiro","Salvador":"Salvador de Bahía","Brasilia":"Brasilia",
+  "Bogota":"Bogotá","Medellin":"Medellín","Barranquilla":"Barranquilla",
+  "Beijing":"Pekín","Shanghai":"Shanghái","Guangzhou":"Cantón","Taipei":"Taipéi",
+  "Tokyo":"Tokio","Kyoto":"Kioto","Osaka":"Osaka","Seoul":"Seúl","Busan":"Busan",
+  "Bangkok":"Bangkok","Hanoi":"Hanói","Ho Chi Minh City":"Ho Chi Minh",
+  "Singapore":"Singapur","Jakarta":"Yakarta","Kuala Lumpur":"Kuala Lumpur",
+  "New Delhi":"Nueva Delhi","Mumbai":"Bombay","Kolkata":"Calcuta","Chennai":"Madrás",
+  "Kathmandu":"Katmandú","Colombo":"Colombo",
+  "Dubai":"Dubái","Abu Dhabi":"Abu Dabi","Doha":"Doha","Riyadh":"Riad",
+  "Tel Aviv":"Tel Aviv","Jerusalem":"Jerusalén","Amman":"Ammán","Beirut":"Beirut",
+  "Cairo":"El Cairo","Alexandria":"Alejandría","Marrakesh":"Marrakech","Fes":"Fez",
+  "Cape Town":"Ciudad del Cabo","Johannesburg":"Johannesburgo",
+  "Sydney":"Sídney","Melbourne":"Melbourne","Auckland":"Auckland","Wellington":"Wellington",
+};
+// Build reverse: Spanish name -> English library name (for search)
+const _esToEng: Record<string,string> = {};
+for (const [eng, es] of Object.entries(_cityES)) {
+  _esToEng[normalize(es)] = eng;
+}
+
+function CitySearch({ value, country, emoji, onSelect, onChange, onCountryChange }) {
+  const [query, setQuery] = useState(value);
+  const [results, setResults] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [highlight, setHighlight] = useState(-1);
+  const ref = useRef(null);
+  const allCities = useMemo(() => City.getAllCities(), []);
+
+  useEffect(() => { setQuery(value); }, [value]);
+
+  useEffect(() => {
+    const handleClick = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  const search = (q: string) => {
+    setQuery(q);
+    onChange(q);
+    if (q.length < 2) { setResults([]); setOpen(false); return; }
+    const nq = normalize(q);
+    // If user types Spanish name, also search the English equivalent
+    const engFromES = Object.entries(_esToEng).find(([es]) => es.startsWith(nq))?.[1];
+    const nqEng = engFromES ? normalize(engFromES) : null;
+
+    const exact = [];    // exact match on city name
+    const starts = [];   // starts with query
+    const contains = []; // contains query or country match
+    const seen = new Set();
+    for (const c of allCities) {
+      if (exact.length >= 8 && starts.length >= 20) break;
+      const nc = normalize(c.name);
+      const co = _countryMap[c.countryCode];
+      if (!co) continue;
+      const cityES = _cityES[c.name] || c.name;
+      const countryES = _countryES[c.countryCode] || co.name;
+      const nES = normalize(cityES);
+      const nCountryES = normalize(countryES);
+      const key = nES + "|" + c.countryCode;
+      if (seen.has(key)) continue;
+      const isExact = nc === nq || nES === nq || (nqEng && nc === nqEng);
+      const isStart = nc.startsWith(nq) || nES.startsWith(nq) || (nqEng && nc.startsWith(nqEng));
+      const isContains = nc.includes(nq) || nES.includes(nq) || nCountryES.startsWith(nq);
+      if (!isExact && !isStart && !isContains) continue;
+      seen.add(key);
+      const entry = { city: cityES, country: countryES, flag: co.flag, code: c.countryCode };
+      if (isExact) exact.push(entry);
+      else if (isStart) starts.push(entry);
+      else if (contains.length < 20) contains.push(entry);
+    }
+    const matched = [...exact, ...starts, ...contains].slice(0, 8);
+    setResults(matched);
+    setOpen(matched.length > 0);
+    setHighlight(-1);
+  };
+
+  const pick = (r) => {
+    setQuery(r.city);
+    onSelect(r.city, r.country, r.flag);
+    setOpen(false);
+  };
+
+  const onKey = (e) => {
+    if (!open) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); setHighlight(p => Math.min(p + 1, results.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setHighlight(p => Math.max(p - 1, 0)); }
+    else if (e.key === "Enter" && highlight >= 0) { e.preventDefault(); pick(results[highlight]); }
+    else if (e.key === "Escape") setOpen(false);
+  };
+
+  return (
+    <div ref={ref} style={{ position: "relative", marginBottom: "1rem" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: ".5rem", alignItems: "start" }}>
+        <div style={{ position: "relative" }}>
+          <input
+            placeholder="Buscar ciudad... Ej. Tokio, París, Bogotá"
+            value={query}
+            onChange={e => search(e.target.value)}
+            onFocus={() => { if (results.length > 0) setOpen(true); }}
+            onKeyDown={onKey}
+            style={{ width: "100%", border: "1px solid rgba(28,28,30,.12)", borderRadius: "6px", padding: ".6rem .8rem", fontSize: ".88rem", color: "#1C1C1E", background: "#F7F4EF" }}
+          />
+          {open && (
+            <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1px solid rgba(28,28,30,.12)", borderRadius: "0 0 8px 8px", boxShadow: "0 8px 30px rgba(28,28,30,.12)", zIndex: 20, maxHeight: "220px", overflowY: "auto" }}>
+              {results.map((r, i) => (
+                <div
+                  key={r.city + r.code + i}
+                  onClick={() => pick(r)}
+                  onMouseEnter={() => setHighlight(i)}
+                  style={{
+                    padding: ".55rem .8rem",
+                    cursor: "pointer",
+                    fontSize: ".85rem",
+                    fontFamily: "'DM Sans',sans-serif",
+                    background: i === highlight ? "rgba(196,98,45,.08)" : "transparent",
+                    borderBottom: i < results.length - 1 ? "1px solid rgba(28,28,30,.06)" : "none",
+                    display: "flex", alignItems: "center", gap: ".5rem",
+                  }}
+                >
+                  <span style={{ fontSize: "1.1rem" }}>{r.flag}</span>
+                  <span><strong>{r.city}</strong> <span style={{ color: "#8A8580" }}>— {r.country}</span></span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        {country && (
+          <div style={{ background: "rgba(196,98,45,.08)", borderRadius: "6px", padding: ".5rem .7rem", fontSize: ".78rem", color: "var(--accent)", fontFamily: "'DM Sans',sans-serif", whiteSpace: "nowrap", marginTop: "1px" }}>
+            {emoji && emoji !== "📍" ? emoji : "📍"} {country}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Date Range Picker ────────────────────────────────────────────────────────
+function DateRangePicker({ startDate, endDate, onChange, startLabel="Inicio", endLabel="Fin" }) {
+  const [open, setOpen] = useState(false);
+  const [viewDate, setViewDate] = useState(() => {
+    if (startDate) return new Date(startDate + "T00:00:00");
+    return new Date();
+  });
+  const [picking, setPicking] = useState("start"); // "start" | "end"
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const ref = useRef(null);
+  const triggerRef = useRef(null);
+
+  useEffect(() => {
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target) && triggerRef.current && !triggerRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  const openCalendar = (pickMode) => {
+    if (triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      const calH = 340;
+      const spaceBelow = window.innerHeight - rect.bottom;
+      setPos({
+        top: spaceBelow >= calH ? rect.bottom + 4 : rect.top - calH - 4,
+        left: Math.min(rect.left, window.innerWidth - 310),
+      });
+    }
+    setPicking(pickMode);
+    setOpen(true);
+  };
+
+  const year = viewDate.getFullYear();
+  const month = viewDate.getMonth();
+  const MONTHS_ES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+  const DAYS_ES = ["Lu","Ma","Mi","Ju","Vi","Sá","Do"];
+
+  const firstDay = new Date(year, month, 1);
+  const startWeekday = (firstDay.getDay() + 6) % 7; // Monday = 0
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const cells = [];
+  for (let i = 0; i < startWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  const toISO = (y, m, d) => `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+
+  const isInRange = (day) => {
+    if (!day || !startDate || !endDate) return false;
+    const iso = toISO(year, month, day);
+    return iso > startDate && iso < endDate;
+  };
+  const isStart = (day) => day && startDate && toISO(year, month, day) === startDate;
+  const isEnd = (day) => day && endDate && toISO(year, month, day) === endDate;
+
+  const handleClick = (day) => {
+    if (!day) return;
+    const iso = toISO(year, month, day);
+    if (picking === "start") {
+      onChange(iso, endDate && endDate >= iso ? endDate : "");
+      setPicking("end");
+    } else {
+      if (startDate && iso < startDate) {
+        onChange(iso, "");
+        setPicking("end");
+      } else {
+        onChange(startDate, iso);
+        setPicking("start");
+        setOpen(false);
+      }
+    }
+  };
+
+  const prevMonth = () => setViewDate(new Date(year, month - 1, 1));
+  const nextMonth = () => setViewDate(new Date(year, month + 1, 1));
+
+  const displayStart = startDate ? fmtDate(startDate) : startLabel;
+  const displayEnd = endDate ? fmtDate(endDate) : endLabel;
+
+  return (
+    <div style={{ marginBottom: "1rem" }}>
+      <div
+        ref={triggerRef}
+        onClick={() => { openCalendar("start"); if (startDate) setViewDate(new Date(startDate + "T00:00:00")); }}
+        style={{
+          display: "flex", alignItems: "center", gap: ".5rem",
+          border: "1px solid rgba(28,28,30,.12)", borderRadius: "8px",
+          padding: ".6rem .9rem", cursor: "pointer", background: "#F7F4EF",
+          fontFamily: "'DM Sans',sans-serif", fontSize: ".85rem",
+        }}
+      >
+        <span style={{ fontSize: "1rem" }}>📅</span>
+        <span
+          onClick={(e) => { e.stopPropagation(); openCalendar("start"); if (startDate) setViewDate(new Date(startDate + "T00:00:00")); }}
+          style={{ padding: ".2rem .5rem", borderRadius: "5px", background: picking === "start" && open ? "rgba(196,98,45,.12)" : "transparent", color: startDate ? "#1C1C1E" : "#8A8580", fontWeight: startDate ? 500 : 400, cursor: "pointer", transition: "all .15s" }}
+        >{displayStart}</span>
+        <span style={{ color: "#8A8580", fontSize: ".9rem" }}>→</span>
+        <span
+          onClick={(e) => { e.stopPropagation(); openCalendar("end"); if (endDate) setViewDate(new Date(endDate + "T00:00:00")); else if (startDate) setViewDate(new Date(startDate + "T00:00:00")); }}
+          style={{ padding: ".2rem .5rem", borderRadius: "5px", background: picking === "end" && open ? "rgba(196,98,45,.12)" : "transparent", color: endDate ? "#1C1C1E" : "#8A8580", fontWeight: endDate ? 500 : 400, cursor: "pointer", transition: "all .15s" }}
+        >{displayEnd}</span>
+        {startDate && endDate && (
+          <span style={{ marginLeft: "auto", fontSize: ".75rem", color: "var(--accent)", fontWeight: 500 }}>
+            {diffDays(startDate, endDate) + 1}d
+          </span>
+        )}
+      </div>
+
+      {open && (
+        <div ref={ref} style={{
+          position: "fixed", top: pos.top, left: pos.left, zIndex: 9999,
+          background: "#fff", border: "1px solid rgba(28,28,30,.12)", borderRadius: "12px",
+          boxShadow: "0 12px 40px rgba(28,28,30,.18)", padding: ".8rem", width: "300px",
+          fontFamily: "'DM Sans',sans-serif",
+        }}>
+          {/* Header */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: ".6rem" }}>
+            <button onClick={prevMonth} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "1rem", padding: ".2rem .5rem", borderRadius: "4px", color: "#1C1C1E" }}>‹</button>
+            <span style={{ fontWeight: 600, fontSize: ".88rem" }}>{MONTHS_ES[month]} {year}</span>
+            <button onClick={nextMonth} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "1rem", padding: ".2rem .5rem", borderRadius: "4px", color: "#1C1C1E" }}>›</button>
+          </div>
+
+          {/* Day headers */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: "2px", marginBottom: ".3rem" }}>
+            {DAYS_ES.map(d => (
+              <div key={d} style={{ textAlign: "center", fontSize: ".65rem", color: "#8A8580", fontWeight: 500, padding: ".2rem 0", textTransform: "uppercase" }}>{d}</div>
+            ))}
+          </div>
+
+          {/* Days grid */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: "2px" }}>
+            {cells.map((day, i) => {
+              const start = isStart(day);
+              const end = isEnd(day);
+              const inRange = isInRange(day);
+              return (
+                <div
+                  key={i}
+                  onClick={() => handleClick(day)}
+                  style={{
+                    textAlign: "center", padding: ".38rem 0", fontSize: ".8rem",
+                    borderRadius: start && end ? "6px" : start ? "6px 0 0 6px" : end ? "0 6px 6px 0" : inRange ? "0" : "6px",
+                    background: start || end ? "#C4622D" : inRange ? "rgba(196,98,45,.12)" : "transparent",
+                    color: start || end ? "#fff" : day ? "#1C1C1E" : "transparent",
+                    cursor: day ? "pointer" : "default",
+                    fontWeight: start || end ? 600 : 400,
+                    transition: "all .1s",
+                  }}
+                  onMouseEnter={(e) => { if (day) e.currentTarget.style.background = start || end ? "#B5551F" : "rgba(196,98,45,.18)"; }}
+                  onMouseLeave={(e) => { if (day) e.currentTarget.style.background = start || end ? "#C4622D" : inRange ? "rgba(196,98,45,.12)" : "transparent"; }}
+                >
+                  {day || ""}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Footer hint */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: ".6rem", paddingTop: ".5rem", borderTop: "1px solid rgba(28,28,30,.08)" }}>
+            <span style={{ fontSize: ".7rem", color: "#8A8580" }}>
+              {picking === "start" ? "Selecciona fecha de inicio" : "Selecciona fecha de fin"}
+            </span>
+            {(startDate || endDate) && (
+              <button
+                onClick={() => { onChange("", ""); setPicking("start"); }}
+                style={{ background: "none", border: "none", fontSize: ".7rem", color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}
+              >Limpiar</button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
