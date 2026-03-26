@@ -412,7 +412,7 @@ export default function TravelPlanner({ user, onSignOut }) {
       <nav className="nav-mobile" style={{position:"sticky",top:0,zIndex:200,background:"#F7F4EF",borderBottom:"1px solid var(--line)",height:"52px",display:"flex",alignItems:"center",padding:"0 1.5rem",gap:".75rem"}}>
         <button onClick={()=>setView("home")} style={{background:"none",border:"none",cursor:"pointer",display:"flex",alignItems:"center",gap:".5rem"}}>
           <span style={{fontSize:"1.2rem"}}>🧭</span>
-          <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.1rem",fontWeight:600,color:"var(--ink)"}}>Suavid Travel Planner</span>
+          <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.1rem",fontWeight:600,color:"var(--ink)"}}>Travel Planner</span>
         </button>
         {view==="trip"&&trip&&<>
           <span className="mobile-hide" style={{color:"var(--line)",fontSize:"1.1rem"}}>›</span>
@@ -1005,22 +1005,74 @@ export default function TravelPlanner({ user, onSignOut }) {
                   </div>
                 </div>}
 
-                {budgetView==="general"&&<>
-                  {trip.destinations.map(d=>{const c=sumCOP(d.items);const est=calcEstimates(d);const total=c+est.total;if(!total)return null;const p=totalCost>0?(total/totalCost)*100:0;const dPaid=d.items.filter(i=>i.paid).reduce((s,i)=>s+_toCOP(i.cost,i.costCurrency),0);return <div key={d.id} style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".55rem"}}>
-                    <span style={{fontSize:".85rem"}}>{d.emoji}</span>
-                    <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".78rem",flex:"0 0 95px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{d.name}</span>
-                    <div style={{flex:1,height:"5px",background:"rgba(28,28,30,.06)",borderRadius:"3px",overflow:"hidden"}}><div style={{height:"100%",width:`${p}%`,background:d.color,borderRadius:"3px"}}/></div>
-                    <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:d.color,flex:"0 0 65px",textAlign:"right"}}>{fmt(total)}</span>
-                    {dPaid>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".6rem",color:"#7EC87E",flexShrink:0}}>✓{fmt(dPaid)}</span>}
-                  </div>;})}
-                  {allTransits.map(tr=>{const tt=ttInfo(tr.transitType);const trCOP=_toCOP(tr.cost,tr.costCurrency);const p=totalCost>0?(trCOP/totalCost)*100:0;return <div key={tr.id} style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".55rem"}}>
-                    <span style={{fontSize:".85rem"}}>{tt.icon}</span>
-                    <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".78rem",flex:"0 0 95px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",color:tt.color}}>{tr.title||tt.label}</span>
-                    <div style={{flex:1,height:"5px",background:"rgba(28,28,30,.06)",borderRadius:"3px",overflow:"hidden"}}><div style={{height:"100%",width:`${p}%`,background:tt.color,borderRadius:"3px"}}/></div>
-                    <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".75rem",color:tt.color,flex:"0 0 65px",textAlign:"right"}}>{fmtI(tr.cost,tr.costCurrency)}</span>
-                    {tr.paid&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".6rem",color:"#7EC87E",flexShrink:0}}>✓</span>}
-                  </div>;})}
-                </>}
+                {budgetView==="general"&&(()=>{
+                  // Group all dest items by type
+                  const destItemsCost = itemsCost;
+                  const typeGroups = {};
+                  trip.destinations.forEach(d=>d.items.filter(i=>i.cost>0).forEach(i=>{
+                    const k=i.type;if(!typeGroups[k])typeGroups[k]={items:[],total:0,paid:0};
+                    const cop=_toCOP(i.cost,i.costCurrency);
+                    typeGroups[k].items.push(i);typeGroups[k].total+=cop;if(i.paid)typeGroups[k].paid+=cop;
+                  }));
+                  const destP = totalCost>0?(destItemsCost+estimatesCost)/totalCost*100:0;
+                  const trP = totalCost>0?transitsCost/totalCost*100:0;
+
+                  return <>
+                    {/* Destinos */}
+                    {(destItemsCost>0||estimatesCost>0)&&<div style={{marginBottom:"1rem"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".5rem"}}>
+                        <span style={{fontSize:".85rem"}}>📍</span>
+                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".82rem",fontWeight:600,flex:"0 0 95px"}}>Destinos</span>
+                        <div style={{flex:1,height:"5px",background:"rgba(28,28,30,.06)",borderRadius:"3px",overflow:"hidden"}}><div style={{height:"100%",width:`${destP}%`,background:"var(--accent)",borderRadius:"3px"}}/></div>
+                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".78rem",color:"var(--accent)",fontWeight:600}}>{fmt(destItemsCost+estimatesCost)}</span>
+                      </div>
+                      <div style={{paddingLeft:"2rem",display:"flex",flexDirection:"column",gap:".35rem"}}>
+                        {Object.entries(typeGroups).map(([type,g])=>{
+                          const T=ITEM_TYPES[type]||ITEM_TYPES.activity;
+                          const p=totalCost>0?g.total/totalCost*100:0;
+                          return <div key={type} style={{display:"flex",alignItems:"center",gap:".6rem"}}>
+                            <span style={{fontSize:".75rem"}}>{T.icon}</span>
+                            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".73rem",color:T.color,fontWeight:500,flex:"0 0 80px"}}>{T.label}</span>
+                            <div style={{flex:1,height:"4px",background:"rgba(28,28,30,.05)",borderRadius:"2px",overflow:"hidden"}}><div style={{height:"100%",width:`${p}%`,background:T.color,borderRadius:"2px"}}/></div>
+                            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:T.color,fontWeight:500}}>{fmt(g.total)}</span>
+                            {g.paid>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".58rem",color:"#7EC87E"}}>✓{Math.round(g.paid/g.total*100)}%</span>}
+                          </div>;
+                        })}
+                        {estimatesCost>0&&<div style={{display:"flex",alignItems:"center",gap:".6rem"}}>
+                          <span style={{fontSize:".75rem"}}>📊</span>
+                          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".73rem",color:"var(--muted)",fontWeight:500,flex:"0 0 80px"}}>Estimados</span>
+                          <div style={{flex:1,height:"4px",background:"rgba(28,28,30,.05)",borderRadius:"2px",overflow:"hidden"}}><div style={{height:"100%",width:`${totalCost>0?estimatesCost/totalCost*100:0}%`,background:"rgba(138,133,128,.3)",borderRadius:"2px"}}/></div>
+                          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--muted)",fontWeight:500}}>{fmt(estimatesCost)}</span>
+                        </div>}
+                      </div>
+                    </div>}
+                    {/* Trayectos */}
+                    {transitsCost>0&&<div>
+                      <div style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".5rem"}}>
+                        <span style={{fontSize:".85rem"}}>🚀</span>
+                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".82rem",fontWeight:600,flex:"0 0 95px"}}>Trayectos</span>
+                        <div style={{flex:1,height:"5px",background:"rgba(28,28,30,.06)",borderRadius:"3px",overflow:"hidden"}}><div style={{height:"100%",width:`${trP}%`,background:"#5AB4E8",borderRadius:"3px"}}/></div>
+                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".78rem",color:"#5AB4E8",fontWeight:600}}>{fmt(transitsCost)}</span>
+                      </div>
+                      <div style={{paddingLeft:"2rem",display:"flex",flexDirection:"column",gap:".35rem"}}>
+                        {(()=>{
+                          const trGroups={};
+                          allTransits.forEach(tr=>{const k=tr.transitType;if(!trGroups[k])trGroups[k]={items:[],total:0,paid:0};const c=_toCOP(tr.cost,tr.costCurrency);trGroups[k].items.push(tr);trGroups[k].total+=c;if(tr.paid)trGroups[k].paid+=c;});
+                          return Object.entries(trGroups).map(([type,g])=>{
+                            const tt=ttInfo(type);
+                            return <div key={type} style={{display:"flex",alignItems:"center",gap:".6rem"}}>
+                              <span style={{fontSize:".75rem"}}>{tt.icon}</span>
+                              <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".73rem",color:tt.color,fontWeight:500,flex:"0 0 80px"}}>{tt.label}</span>
+                              <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".65rem",color:"var(--muted)"}}>{g.items.length}</span>
+                              <span style={{marginLeft:"auto",fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:tt.color,fontWeight:500}}>{fmt(g.total)}</span>
+                              {g.paid>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".58rem",color:"#7EC87E"}}>✓{Math.round(g.paid/g.total*100)}%</span>}
+                            </div>;
+                          });
+                        })()}
+                      </div>
+                    </div>}
+                  </>;
+                })()}
 
                 {budgetView==="detail"&&<>
                   {/* By destination with item details */}
