@@ -88,8 +88,10 @@ export default function TravelPlanner({ user, onSignOut }) {
   const saveTimer = useRef(null);
 
   // ── Load trips from Firestore on mount ─────────────────────────────────────
+  const loadedRef = useRef(false);
   useEffect(() => {
     if (!user?.uid) return;
+    loadedRef.current = false;
     const load = async () => {
       try {
         const snap = await getDoc(doc(db, "userData", user.uid));
@@ -99,14 +101,15 @@ export default function TravelPlanner({ user, onSignOut }) {
       } catch (err) {
         console.error("Error loading data:", err);
       }
-      setDataLoaded(true);
+      // Mark loaded after a tick so the save effect skips the initial trips state
+      setTimeout(() => { loadedRef.current = true; setDataLoaded(true); }, 100);
     };
     load();
   }, [user?.uid]);
 
   // ── Save trips to Firestore when they change (debounced) ───────────────────
   useEffect(() => {
-    if (!dataLoaded || !user?.uid) return;
+    if (!loadedRef.current || !dataLoaded || !user?.uid) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       setSaving(true);
