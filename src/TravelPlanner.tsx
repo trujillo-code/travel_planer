@@ -396,15 +396,48 @@ export default function TravelPlanner({ user, onSignOut }) {
         input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent)!important}
         .hint{font-size:.68rem;color:var(--accent);margin-top:-.5rem;margin-bottom:.75rem;font-family:'DM Sans',sans-serif}
         .transit-card:hover{box-shadow:0 4px 20px rgba(28,28,30,.1)!important;transform:translateY(-1px)}
+        @media(max-width:1024px){
+          .sidebar-mobile{width:180px!important}
+          .content-padding{padding:1.25rem 1.25rem!important}
+        }
         @media(max-width:768px){
           .mobile-hide{display:none!important}
           .nav-mobile{flex-wrap:wrap;height:auto!important;min-height:52px;padding:.5rem 1rem!important;gap:.4rem!important}
           .nav-tabs-mobile{width:100%;order:10;justify-content:center}
           .trip-layout{flex-direction:column!important;height:auto!important}
           .sidebar-mobile{width:100%!important;max-height:none;border-right:none!important;border-bottom:1px solid var(--line)}
-          .sidebar-dests{max-height:150px;overflow-y:auto}
+          .sidebar-dests{max-height:150px;overflow-y:auto;-webkit-overflow-scrolling:touch}
           .main-content{min-height:calc(100vh - 52px)}
           .modal-inner{max-width:95vw!important;padding:1.25rem!important;margin:.5rem}
+          .content-padding{padding:1rem .75rem!important}
+          .form-grid-2{grid-template-columns:1fr!important}
+          .form-grid-3{grid-template-columns:1fr!important}
+          .est-grid{grid-template-columns:1fr!important}
+          .calendar-grid>div{min-height:65px!important;padding:.25rem!important}
+          .budget-label{flex:0 0 60px!important;font-size:.68rem!important}
+          .trip-cards{grid-template-columns:repeat(auto-fill,minmax(220px,1fr))!important}
+          .stats-grid{grid-template-columns:repeat(auto-fill,minmax(100px,1fr))!important}
+          .stats-grid .span-2{grid-column:span 1!important}
+          .route-vis{overflow-x:auto!important;-webkit-overflow-scrolling:touch;flex-wrap:nowrap!important}
+          .day-filters{-webkit-overflow-scrolling:touch}
+          .dest-header{flex-direction:column!important;align-items:flex-start!important;gap:.75rem!important}
+          .sidebar-actions{flex-direction:row!important}
+          .sidebar-actions>button{flex:1}
+          .transit-route-grid{grid-template-columns:1fr!important;gap:.5rem!important}
+          .transit-route-grid>.transit-arrow{display:none!important}
+        }
+        @media(max-width:480px){
+          .nav-mobile{padding:.4rem .5rem!important;gap:.3rem!important}
+          .modal-overlay{padding:0!important;align-items:flex-end!important}
+          .modal-inner{max-width:100vw!important;padding:1rem!important;margin:0!important;border-radius:12px 12px 0 0!important;max-height:92vh!important}
+          .content-padding{padding:.75rem .5rem!important}
+          .trip-cards{grid-template-columns:1fr!important}
+          .stats-grid{grid-template-columns:1fr 1fr!important}
+          .calendar-grid>div{min-height:50px!important;padding:.15rem!important}
+          .calendar-grid>div *{font-size:.5rem!important}
+          .calendar-grid>div>div:first-child span:first-child{font-size:.7rem!important}
+          .sidebar-dests{max-height:120px}
+          .day-filters>button{font-size:.68rem!important;padding:.25rem .5rem!important;min-width:50px}
         }
       `}</style>
 
@@ -450,7 +483,7 @@ export default function TravelPlanner({ user, onSignOut }) {
             <p style={{color:"var(--muted)",fontFamily:"'DM Sans',sans-serif",margin:"0 0 1.5rem"}}>No tienes viajes aún. ¡Crea el primero!</p>
             <button onClick={()=>{setForm({emoji:"🌍"});setModal("newTrip");}} style={{background:"var(--accent)",border:"none",color:"#fff",padding:".7rem 2rem",borderRadius:"8px",fontSize:".9rem",fontWeight:500,cursor:"pointer"}}>Crear mi primer viaje</button>
           </div>
-          :<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:"1rem"}}>
+          :<div className="trip-cards" style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:"1rem"}}>
             {trips.map(t=>{
               const _r=t.copRate||0;const _c=t.currency||"COP";const _tc=(amt,cc)=>toCOP(amt||0,cc||"COP",_c,_r);
               const cost=t.destinations.reduce((s,d)=>s+d.items.reduce((ss,i)=>ss+_tc(i.cost,i.costCurrency),0),0)+(t.transits||[]).reduce((s,tr)=>s+_tc(tr.cost,tr.costCurrency),0);
@@ -501,7 +534,7 @@ export default function TravelPlanner({ user, onSignOut }) {
           </div>
 
           {/* dest list */}
-          <div className="sidebar-dests" style={{flex:1,overflowY:"auto",padding:".4rem 0"}}>
+          <div className="sidebar-dests" style={{flex:1,overflowY:"auto",padding:".4rem 0",WebkitOverflowScrolling:"touch"}}>
             {trip.destinations.length===0
               ?<div style={{padding:"1rem",textAlign:"center",color:"var(--muted)",fontFamily:"'DM Sans',sans-serif",fontSize:".75rem"}}>Añade tu primer destino →</div>
               :trip.destinations.map(d=>(
@@ -538,7 +571,7 @@ export default function TravelPlanner({ user, onSignOut }) {
             </>}
           </div>
 
-          <div style={{padding:".6rem",borderTop:"1px solid var(--line)",display:"flex",flexDirection:"column",gap:".4rem"}}>
+          <div className="sidebar-actions" style={{padding:".6rem",borderTop:"1px solid var(--line)",display:"flex",flexDirection:"column",gap:".4rem"}}>
             <button onClick={openNewDest} className="hov-add" style={{width:"100%",background:"none",border:"1.5px dashed rgba(28,28,30,.18)",borderRadius:"6px",padding:".4rem",color:"var(--muted)",cursor:"pointer",fontSize:".75rem",transition:"all .2s"}}>📍 Destino</button>
             <button onClick={()=>{openNewTransit();}} className="hov-add" style={{width:"100%",background:"none",border:"1.5px dashed rgba(90,180,232,.5)",borderRadius:"6px",padding:".4rem",color:"#5AB4E8",cursor:"pointer",fontSize:".75rem",transition:"all .2s"}}>🚀 Trayecto</button>
           </div>
@@ -548,7 +581,7 @@ export default function TravelPlanner({ user, onSignOut }) {
         <main className="main-content" style={{flex:1,overflowY:"auto",background:"#F7F4EF"}}>
 
           {/* ── TRANSITS VIEW ───────────────────────────────────────────────── */}
-          {tripView==="transits"&&<div style={{padding:"1.5rem 2rem",maxWidth:"860px"}}>
+          {tripView==="transits"&&<div className="content-padding" style={{padding:"1.5rem 2rem",maxWidth:"860px"}}>
             <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:"1.75rem"}}>
               <div>
                 <h2 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.9rem",fontWeight:600,margin:"0 0 .3rem"}}>Trayectos</h2>
@@ -606,7 +639,7 @@ export default function TravelPlanner({ user, onSignOut }) {
                   </div>;
                 })()}
 
-                <div style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:0}}>
+                <div className="route-vis" style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:0}}>
                   {dests.map((d,i)=>{
                     // Non-rental transits between consecutive dests
                     const transitBetween = (trip.transits||[]).filter(tr=>!isRental(tr.transitType)&&tr.fromDestId===d.id&&tr.toDestId===dests[i+1]?.id);
@@ -700,7 +733,7 @@ export default function TravelPlanner({ user, onSignOut }) {
           </div>}
 
           {/* ── SUMMARY VIEW ────────────────────────────────────────────────── */}
-          {tripView==="summary"&&<div style={{padding:"1.5rem 2rem",maxWidth:"860px"}}>
+          {tripView==="summary"&&<div className="content-padding" style={{padding:"1.5rem 2rem",maxWidth:"860px"}}>
             <div style={{marginBottom:"1.75rem"}}>
               <h2 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:"1.9rem",fontWeight:600,margin:"0 0 .3rem"}}>Resumen del itinerario</h2>
               <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:".8rem",color:"var(--muted)",margin:0}}>
@@ -738,7 +771,7 @@ export default function TravelPlanner({ user, onSignOut }) {
                     </div>;
                   })}
                 </div>}
-                <div style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:".2rem",overflowX:"auto"}}>
+                <div className="route-vis" style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:".2rem",overflowX:"auto"}}>
                   {dests.map((d,i)=>{
                     const trs=(trip.transits||[]).filter(tr=>!isRental(tr.transitType)&&tr.fromDestId===d.id&&tr.toDestId===dests[i+1]?.id);
                     const hasRental=!!rentalCov[i];
@@ -771,14 +804,14 @@ export default function TravelPlanner({ user, onSignOut }) {
               const all=trip.destinations.flatMap(d=>d.items);
               const conf=all.filter(i=>i.confirmed).length;
               const tconf=(trip.transits||[]).filter(t=>t.confirmed).length;
-              return <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:".75rem",marginBottom:"2rem"}}>
+              return <div className="stats-grid" style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:".75rem",marginBottom:"2rem"}}>
                 {[["📅","Días",tripDays],["📍","Destinos",trip.destinations.length],["🚀","Trayectos",`${tconf}/${(trip.transits||[]).length}`],["🎯","Actividades",all.filter(i=>i.type==="activity").length],["🏨","Hospedajes",all.filter(i=>i.type==="hotel").length],["✓","Confirmados",`${conf}/${all.length}`]].map(([ic,lb,vl])=>(
                   <div key={lb} style={{background:"#fff",border:"1px solid var(--line)",borderRadius:"8px",padding:".9rem 1rem"}}>
                     <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:"1.1rem",fontWeight:600,color:"var(--accent)"}}>{vl}</div>
                     <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".65rem",color:"var(--muted)",marginTop:".1rem",textTransform:"uppercase",letterSpacing:".05em"}}>{ic} {lb}</div>
                   </div>
                 ))}
-                {totalCost>0&&<div style={{background:"#fff",border:"1px solid var(--line)",borderRadius:"8px",padding:".9rem 1rem",gridColumn:"span 2"}}>
+                {totalCost>0&&<div className="span-2" style={{background:"#fff",border:"1px solid var(--line)",borderRadius:"8px",padding:".9rem 1rem",gridColumn:"span 2"}}>
                   <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".95rem",fontWeight:600,color:"var(--accent)"}}>{fmt(totalCost)}</div>
                   <div style={{display:"flex",gap:".75rem",marginTop:".2rem",fontFamily:"'DM Sans',sans-serif",fontSize:".62rem"}}>
                     <span style={{color:"var(--muted)",textTransform:"uppercase",letterSpacing:".05em"}}>💰 Total</span>
@@ -805,7 +838,7 @@ export default function TravelPlanner({ user, onSignOut }) {
                   </div>
                   <span style={{fontSize:".8rem",color:"var(--muted)",transition:"transform .2s",transform:showEstimates?"rotate(180deg)":"rotate(0)"}}>{showEstimates?"▾":"▸"}</span>
                 </div>
-                {showEstimates&&<><div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:".75rem",marginTop:"1rem",marginBottom:".75rem"}}>
+                {showEstimates&&<><div className="est-grid" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:".75rem",marginTop:"1rem",marginBottom:".75rem"}}>
                   <div>
                     <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".68rem",color:"#7EC87E",fontWeight:500,marginBottom:".3rem"}}>🏨 Hospedaje/noche</div>
                     <div style={{display:"flex",gap:".3rem",alignItems:"center"}}>{inp(trip.estHotel,"estHotel")}{curBtn()}</div>
@@ -874,10 +907,10 @@ export default function TravelPlanner({ user, onSignOut }) {
 
               return <div style={{marginBottom:"2rem",background:"#fff",border:"1px solid var(--line)",borderRadius:"10px",padding:"1.25rem 1.5rem"}}>
                 <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:".08em",marginBottom:"1rem"}}>Calendario</div>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:".4rem",marginBottom:".5rem"}}>
+                <div className="calendar-grid" style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:".4rem",marginBottom:".5rem"}}>
                   {["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"].map(d=><div key={d} style={{textAlign:"center",fontFamily:"'DM Sans',sans-serif",fontSize:".7rem",color:"var(--muted)",fontWeight:600,padding:".35rem 0"}}>{d}</div>)}
                 </div>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:".4rem"}}>
+                <div className="calendar-grid" style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:".4rem"}}>
                   {Array.from({length:firstDow}).map((_,i)=><div key={"e"+i}/>)}
                   {dates.map(date=>{
                     const entries=byDate[date];
@@ -1022,7 +1055,7 @@ export default function TravelPlanner({ user, onSignOut }) {
                     {(destItemsCost>0||estimatesCost>0)&&<div style={{marginBottom:"1rem"}}>
                       <div style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".5rem"}}>
                         <span style={{fontSize:".85rem"}}>📍</span>
-                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".82rem",fontWeight:600,flex:"0 0 95px"}}>Destinos</span>
+                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".82rem",fontWeight:600,flex:"0 1 95px",minWidth:"60px"}}>Destinos</span>
                         <div style={{flex:1,height:"5px",background:"rgba(28,28,30,.06)",borderRadius:"3px",overflow:"hidden"}}><div style={{height:"100%",width:`${destP}%`,background:"var(--accent)",borderRadius:"3px"}}/></div>
                         <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".78rem",color:"var(--accent)",fontWeight:600}}>{fmt(destItemsCost+estimatesCost)}</span>
                       </div>
@@ -1032,7 +1065,7 @@ export default function TravelPlanner({ user, onSignOut }) {
                           const p=totalCost>0?g.total/totalCost*100:0;
                           return <div key={type} style={{display:"flex",alignItems:"center",gap:".6rem"}}>
                             <span style={{fontSize:".75rem"}}>{T.icon}</span>
-                            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".73rem",color:T.color,fontWeight:500,flex:"0 0 80px"}}>{T.label}</span>
+                            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".73rem",color:T.color,fontWeight:500,flex:"0 1 80px",minWidth:"50px"}}>{T.label}</span>
                             <div style={{flex:1,height:"4px",background:"rgba(28,28,30,.05)",borderRadius:"2px",overflow:"hidden"}}><div style={{height:"100%",width:`${p}%`,background:T.color,borderRadius:"2px"}}/></div>
                             <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:T.color,fontWeight:500}}>{fmt(g.total)}</span>
                             {g.paid>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".58rem",color:"#7EC87E"}}>✓{Math.round(g.paid/g.total*100)}%</span>}
@@ -1040,7 +1073,7 @@ export default function TravelPlanner({ user, onSignOut }) {
                         })}
                         {estimatesCost>0&&<div style={{display:"flex",alignItems:"center",gap:".6rem"}}>
                           <span style={{fontSize:".75rem"}}>📊</span>
-                          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".73rem",color:"var(--muted)",fontWeight:500,flex:"0 0 80px"}}>Estimados</span>
+                          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".73rem",color:"var(--muted)",fontWeight:500,flex:"0 1 80px",minWidth:"50px"}}>Estimados</span>
                           <div style={{flex:1,height:"4px",background:"rgba(28,28,30,.05)",borderRadius:"2px",overflow:"hidden"}}><div style={{height:"100%",width:`${totalCost>0?estimatesCost/totalCost*100:0}%`,background:"rgba(138,133,128,.3)",borderRadius:"2px"}}/></div>
                           <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:"var(--muted)",fontWeight:500}}>{fmt(estimatesCost)}</span>
                         </div>}
@@ -1050,7 +1083,7 @@ export default function TravelPlanner({ user, onSignOut }) {
                     {transitsCost>0&&<div>
                       <div style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".5rem"}}>
                         <span style={{fontSize:".85rem"}}>🚀</span>
-                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".82rem",fontWeight:600,flex:"0 0 95px"}}>Trayectos</span>
+                        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".82rem",fontWeight:600,flex:"0 1 95px",minWidth:"60px"}}>Trayectos</span>
                         <div style={{flex:1,height:"5px",background:"rgba(28,28,30,.06)",borderRadius:"3px",overflow:"hidden"}}><div style={{height:"100%",width:`${trP}%`,background:"#5AB4E8",borderRadius:"3px"}}/></div>
                         <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".78rem",color:"#5AB4E8",fontWeight:600}}>{fmt(transitsCost)}</span>
                       </div>
@@ -1062,7 +1095,7 @@ export default function TravelPlanner({ user, onSignOut }) {
                             const tt=ttInfo(type);
                             return <div key={type} style={{display:"flex",alignItems:"center",gap:".6rem"}}>
                               <span style={{fontSize:".75rem"}}>{tt.icon}</span>
-                              <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".73rem",color:tt.color,fontWeight:500,flex:"0 0 80px"}}>{tt.label}</span>
+                              <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".73rem",color:tt.color,fontWeight:500,flex:"0 1 80px",minWidth:"50px"}}>{tt.label}</span>
                               <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".65rem",color:"var(--muted)"}}>{g.items.length}</span>
                               <span style={{marginLeft:"auto",fontFamily:"'DM Sans',sans-serif",fontSize:".72rem",color:tt.color,fontWeight:500}}>{fmt(g.total)}</span>
                               {g.paid>0&&<span style={{fontFamily:"'DM Sans',sans-serif",fontSize:".58rem",color:"#7EC87E"}}>✓{Math.round(g.paid/g.total*100)}%</span>}
@@ -1120,14 +1153,14 @@ export default function TravelPlanner({ user, onSignOut }) {
                       const total=items.reduce((s,i)=>s+_toCOP(i.cost,i.costCurrency),0);
                       const paid=items.filter(i=>i.paid).reduce((s,i)=>s+_toCOP(i.cost,i.costCurrency),0);
                       return <div key={type} style={{display:"flex",alignItems:"center",gap:".5rem",fontFamily:"'DM Sans',sans-serif",fontSize:".74rem",marginBottom:".3rem"}}>
-                        <span>{T.icon}</span><span style={{color:T.color,fontWeight:500,flex:"0 0 80px"}}>{T.label}</span>
+                        <span>{T.icon}</span><span style={{color:T.color,fontWeight:500,flex:"0 1 80px",minWidth:"50px"}}>{T.label}</span>
                         <span style={{color:"var(--muted)"}}>{items.length} items</span>
                         <span style={{marginLeft:"auto",color:"var(--accent)",fontWeight:500}}>{fmt(total)}</span>
                         {paid>0&&<span style={{fontSize:".62rem",color:"#7EC87E"}}>✓{fmt(paid)}</span>}
                       </div>;
                     })}
                     {allTransits.length>0&&<div style={{display:"flex",alignItems:"center",gap:".5rem",fontFamily:"'DM Sans',sans-serif",fontSize:".74rem"}}>
-                      <span>🚀</span><span style={{color:"var(--muted)",fontWeight:500,flex:"0 0 80px"}}>Trayectos</span>
+                      <span>🚀</span><span style={{color:"var(--muted)",fontWeight:500,flex:"0 1 80px",minWidth:"50px"}}>Trayectos</span>
                       <span style={{color:"var(--muted)"}}>{allTransits.length} items</span>
                       <span style={{marginLeft:"auto",color:"var(--accent)",fontWeight:500}}>{fmt(transitsCost)}</span>
                       {paidTransitsCOP>0&&<span style={{fontSize:".62rem",color:"#7EC87E"}}>✓{fmt(paidTransitsCOP)}</span>}
@@ -1170,8 +1203,8 @@ export default function TravelPlanner({ user, onSignOut }) {
             ?<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100%",color:"var(--muted)",fontFamily:"'DM Sans',sans-serif"}}>
               <div style={{fontSize:"3rem",marginBottom:"1rem"}}>🗺</div><p>Selecciona o crea un destino</p>
             </div>
-            :<div style={{padding:"1.5rem 2rem",maxWidth:"860px"}}>
-              <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:"1.5rem"}}>
+            :<div className="content-padding" style={{padding:"1.5rem 2rem",maxWidth:"860px"}}>
+              <div className="dest-header" style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:"1.5rem"}}>
                 <div>
                   <div style={{display:"flex",alignItems:"center",gap:".75rem",marginBottom:".25rem"}}>
                     <span style={{fontSize:"2rem"}}>{activeDest.emoji}</span>
@@ -1187,7 +1220,7 @@ export default function TravelPlanner({ user, onSignOut }) {
                 <button onClick={()=>{setForm({type:"activity",day:dayFilter||1});setModal("newItem");}} style={{background:"var(--accent)",border:"none",color:"#fff",padding:".55rem 1.2rem",borderRadius:"8px",fontSize:".82rem",fontWeight:500,cursor:"pointer",whiteSpace:"nowrap"}}>+ Agregar</button>
               </div>
 
-              <div style={{display:"flex",gap:".4rem",marginBottom:"1.25rem",overflowX:"auto",paddingBottom:".25rem"}}>
+              <div className="day-filters" style={{display:"flex",gap:".4rem",marginBottom:"1.25rem",overflowX:"auto",paddingBottom:".25rem",WebkitOverflowScrolling:"touch"}}>
                 <button onClick={()=>setDayFilter(null)} style={{background:dayFilter===null?"var(--ink)":"rgba(28,28,30,.06)",border:"none",color:dayFilter===null?"#fff":"var(--muted)",padding:".35rem .9rem",borderRadius:"20px",fontSize:".74rem",cursor:"pointer",whiteSpace:"nowrap",transition:"all .15s"}}>Todos</button>
                 {Array.from({length:activeDest.days},(_,i)=>i+1).map(d=>{
                   const rd=dayToDate(activeDest,d);
@@ -1300,7 +1333,7 @@ export default function TravelPlanner({ user, onSignOut }) {
       </div>}
 
       {/* ── MODALS ──────────────────────────────────────────────────────────── */}
-      {modal&&<div onClick={closeModal} style={{position:"fixed",inset:0,background:"rgba(28,28,30,.5)",zIndex:500,display:"flex",alignItems:"center",justifyContent:"center",padding:"1rem"}}>
+      {modal&&<div className="modal-overlay" onClick={closeModal} style={{position:"fixed",inset:0,background:"rgba(28,28,30,.5)",zIndex:500,display:"flex",alignItems:"center",justifyContent:"center",padding:"1rem"}}>
         <div className="modal-inner" onClick={e=>e.stopPropagation()} style={{background:"#fff",borderRadius:"14px",padding:"2rem",width:"100%",maxWidth:modal==="newTransit"||modal==="editTransit"?"540px":"420px",boxShadow:"0 24px 80px rgba(28,28,30,.22)",maxHeight:"90vh",overflowY:"auto"}}>
 
           {modal==="newTrip"&&<>
@@ -1351,12 +1384,12 @@ export default function TravelPlanner({ user, onSignOut }) {
               ))}
             </div>
             <Lbl>Origen → Destino</Lbl>
-            <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:".5rem",alignItems:"center",marginBottom:"1rem"}}>
+            <div className="transit-route-grid" style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:".5rem",alignItems:"center",marginBottom:"1rem"}}>
               <select value={form.fromDestId||""} onChange={e=>setForm(p=>({...p,fromDestId:e.target.value}))} style={{border:"1px solid rgba(28,28,30,.12)",borderRadius:"6px",padding:".55rem .7rem",fontSize:".85rem",color:"#1C1C1E",background:"#F7F4EF",cursor:"pointer"}}>
                 <option value="">— Origen</option>
                 {(trip?.destinations||[]).map(d=><option key={d.id} value={d.id}>{d.emoji} {d.name}</option>)}
               </select>
-              <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:"1rem",color:"var(--muted)",textAlign:"center"}}>→</span>
+              <span className="transit-arrow" style={{fontFamily:"'DM Sans',sans-serif",fontSize:"1rem",color:"var(--muted)",textAlign:"center"}}>→</span>
               <select value={form.toDestId||""} onChange={e=>setForm(p=>({...p,toDestId:e.target.value}))} style={{border:"1px solid rgba(28,28,30,.12)",borderRadius:"6px",padding:".55rem .7rem",fontSize:".85rem",color:"#1C1C1E",background:"#F7F4EF",cursor:"pointer"}}>
                 <option value="">— Destino</option>
                 {(trip?.destinations||[]).map(d=><option key={d.id} value={d.id}>{d.emoji} {d.name}</option>)}
@@ -1380,13 +1413,13 @@ export default function TravelPlanner({ user, onSignOut }) {
               :<>
                 <Lbl>Fechas del trayecto</Lbl>
                 <DateRangePicker startDate={form.date||""} endDate={form.returnDate||""} onChange={(s,e)=>setForm(p=>({...p,date:s,returnDate:e}))} startLabel="Salida" endLabel="Llegada"/>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".75rem"}}>
+                <div className="form-grid-2" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".75rem"}}>
                   <div><Lbl>Hora salida</Lbl><Inp type="time" value={form.departTime||""} onChange={e=>setForm(p=>({...p,departTime:e.target.value}))}/></div>
                   <div><Lbl>Hora llegada</Lbl><Inp type="time" value={form.arriveTime||""} onChange={e=>setForm(p=>({...p,arriveTime:e.target.value}))}/></div>
                 </div>
               </>
             }
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".75rem"}}>
+            <div className="form-grid-2" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".75rem"}}>
               <div><Lbl>Proveedor / Aerolínea</Lbl><Inp placeholder="Ej. Avianca" value={form.provider||""} onChange={e=>setForm(p=>({...p,provider:e.target.value}))}/></div>
               <div><Lbl>N° Confirmación / Reserva</Lbl><Inp placeholder="Ej. ABC123" value={form.confirmation||""} onChange={e=>setForm(p=>({...p,confirmation:e.target.value}))}/></div>
             </div>
@@ -1424,7 +1457,7 @@ export default function TravelPlanner({ user, onSignOut }) {
                   <button onClick={()=>setForm(p=>({...p,day:p.day||1,dayEnd:undefined,_allDays:false}))} style={{background:form._allDays===false&&!form.dayEnd?"var(--accent)":"rgba(28,28,30,.05)",border:"none",color:form._allDays===false&&!form.dayEnd?"#fff":"var(--muted)",padding:".4rem .8rem",borderRadius:"6px",cursor:"pointer",fontSize:".78rem",transition:"all .15s"}}>1️⃣ Un día</button>
                   <button onClick={()=>setForm(p=>({...p,day:p.day||1,dayEnd:Math.max((p.day||1)+1,p.dayEnd||((p.day||1)+1)),_allDays:false}))} style={{background:form._allDays===false&&form.dayEnd?"var(--accent)":"rgba(28,28,30,.05)",border:"none",color:form._allDays===false&&form.dayEnd?"#fff":"var(--muted)",padding:".4rem .8rem",borderRadius:"6px",cursor:"pointer",fontSize:".78rem",transition:"all .15s"}}>📅 Elegir días</button>
                 </div>
-                {form._allDays===false&&!form.dayEnd&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:".75rem"}}>
+                {form._allDays===false&&!form.dayEnd&&<div className="form-grid-3" style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:".75rem"}}>
                   <div>
                     <Lbl>Día</Lbl>
                     <Inp type="number" min="1" max={activeDest?.days||99} value={form.day||1} onChange={e=>setForm(p=>({...p,day:+e.target.value}))}/>
@@ -1433,7 +1466,7 @@ export default function TravelPlanner({ user, onSignOut }) {
                   <div><Lbl>Hora</Lbl><Inp type="time" value={form.time||""} onChange={e=>setForm(p=>({...p,time:e.target.value}))}/></div>
                   <div><Lbl>Duración</Lbl><Inp placeholder="2h" value={form.duration||""} onChange={e=>setForm(p=>({...p,duration:e.target.value}))}/></div>
                 </div>}
-                {form._allDays===false&&form.dayEnd&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".75rem"}}>
+                {form._allDays===false&&form.dayEnd&&<div className="form-grid-2" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".75rem"}}>
                   <div>
                     <Lbl>Desde día</Lbl>
                     <Inp type="number" min="1" max={activeDest?.days||99} value={form.day||1} onChange={e=>setForm(p=>({...p,day:+e.target.value,dayEnd:Math.max(+e.target.value+1,p.dayEnd||+e.target.value+1)}))}/>
@@ -1662,10 +1695,12 @@ function DateRangePicker({ startDate, endDate, onChange, startLabel="Inicio", en
     if (triggerRef.current) {
       const rect = triggerRef.current.getBoundingClientRect();
       const calH = 340;
+      const calW = Math.min(300, window.innerWidth - 16);
       const spaceBelow = window.innerHeight - rect.bottom;
       setPos({
-        top: spaceBelow >= calH ? rect.bottom + 4 : rect.top - calH - 4,
-        left: Math.min(rect.left, window.innerWidth - 310),
+        top: spaceBelow >= calH ? rect.bottom + 4 : Math.max(8, rect.top - calH - 4),
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - calW - 8)),
+        width: calW,
       });
     }
     setPicking(pickMode);
@@ -1752,7 +1787,7 @@ function DateRangePicker({ startDate, endDate, onChange, startLabel="Inicio", en
         <div ref={ref} style={{
           position: "fixed", top: pos.top, left: pos.left, zIndex: 9999,
           background: "#fff", border: "1px solid rgba(28,28,30,.12)", borderRadius: "12px",
-          boxShadow: "0 12px 40px rgba(28,28,30,.18)", padding: ".8rem", width: "300px",
+          boxShadow: "0 12px 40px rgba(28,28,30,.18)", padding: ".8rem", width: pos.width || 300, maxWidth: "calc(100vw - 16px)",
           fontFamily: "'DM Sans',sans-serif",
         }}>
           {/* Header */}
